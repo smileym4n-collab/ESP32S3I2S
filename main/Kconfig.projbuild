@@ -1,0 +1,96 @@
+menu "USB to I2S DAC"
+
+    choice AUDIO_SAMPLE_RATE_CHOICE
+        prompt "USB/I2S sample rate"
+        default AUDIO_SAMPLE_RATE_48000
+        help
+            The board has a fixed 12.288 MHz MCLK oscillator wired directly
+            to the PCM1798 DAC. 48 kHz uses 256fs and 96 kHz uses 128fs.
+            44.1 kHz and 88.2 kHz are intentionally not offered.
+
+        config AUDIO_SAMPLE_RATE_48000
+            bool "48 kHz"
+
+        config AUDIO_SAMPLE_RATE_96000
+            bool "96 kHz (experimental)"
+    endchoice
+
+    config AUDIO_SAMPLE_RATE
+        int
+        default 48000 if AUDIO_SAMPLE_RATE_48000
+        default 96000 if AUDIO_SAMPLE_RATE_96000
+
+    choice AUDIO_BIT_DEPTH_CHOICE
+        prompt "USB PCM bit depth"
+        default AUDIO_BIT_DEPTH_16
+        help
+            16-bit is the reliable default with the managed Espressif
+            usb_device_uac component. 24-bit is left available for custom
+            descriptor work or component versions that expose 24-bit
+            speaker descriptors.
+
+        config AUDIO_BIT_DEPTH_16
+            bool "16-bit stereo PCM"
+
+        config AUDIO_BIT_DEPTH_24
+            bool "24-bit stereo PCM (descriptor support required)"
+    endchoice
+
+    config AUDIO_BITS_PER_SAMPLE
+        int
+        default 16 if AUDIO_BIT_DEPTH_16
+        default 24 if AUDIO_BIT_DEPTH_24
+
+    config AUDIO_I2S_PORT
+        int "I2S port"
+        default 0
+        range 0 1
+
+    config AUDIO_I2S_BCLK_GPIO
+        int "I2S BCLK GPIO"
+        default -1
+        help
+            Set this to the board's BCLK pin. The default intentionally
+            fails at runtime until the custom board pinout is filled in.
+
+    config AUDIO_I2S_WS_GPIO
+        int "I2S LRCK/WS GPIO"
+        default -1
+        help
+            Set this to the board's LRCK/WS pin.
+
+    config AUDIO_I2S_DATA_GPIO
+        int "I2S DATA GPIO"
+        default -1
+        help
+            Set this to the board's serial data output pin feeding the DAC.
+
+    config AUDIO_I2S_DMA_DESC_NUM
+        int "I2S DMA descriptor count"
+        default 8
+        range 4 16
+
+    config AUDIO_I2S_DMA_FRAME_NUM
+        int "I2S DMA frames per descriptor"
+        default 240
+        range 48 511
+        help
+            240 frames is 5 ms at 48 kHz and 2.5 ms at 96 kHz. Keep this
+            below the ESP-IDF I2S driver's 511-frame limit.
+
+    config AUDIO_STREAM_BUFFER_MS
+        int "USB-to-I2S software buffer in ms"
+        default 64
+        range 20 250
+
+    config AUDIO_PREFILL_MS
+        int "Audio prefill before I2S start in ms"
+        default 20
+        range 2 100
+
+    config AUDIO_IDLE_STOP_MS
+        int "Stop I2S after no USB audio for this many ms"
+        default 250
+        range 50 2000
+
+endmenu
