@@ -1,3 +1,4 @@
+.vscode/
 .pio/
 build/
 managed_components/
@@ -6,4 +7,3 @@ sdkconfig
 sdkconfig.old
 sdkconfig.*
 !sdkconfig.defaults
-!sdkconfig.defaults.96k

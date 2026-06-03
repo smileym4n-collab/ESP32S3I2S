@@ -1,3 +1,2 @@
 dependencies:
   idf: ">=5.2.0"
-  espressif/usb_device_uac: "^1.2.2"

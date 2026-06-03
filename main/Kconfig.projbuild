@@ -80,17 +80,17 @@ menu "USB to I2S DAC"
 
     config AUDIO_STREAM_BUFFER_MS
         int "USB-to-I2S software buffer in ms"
-        default 64
+        default 128
         range 20 250
 
     config AUDIO_PREFILL_MS
         int "Audio prefill before I2S start in ms"
-        default 20
+        default 40
         range 2 100
 
     config AUDIO_IDLE_STOP_MS
         int "Stop I2S after no USB audio for this many ms"
-        default 250
+        default 1000
         range 50 2000
 
 endmenu

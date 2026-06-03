@@ -31,11 +31,11 @@ pinout is known.
 
 ## Audio Format
 
-The default build is a reliable first target:
+The firmware presents to the host as `Tom Watson Audio` and supports:
 
 - USB Audio Class speaker device through Espressif's TinyUSB-based
   `usb_device_uac` component
-- 48 kHz stereo
+- 48 kHz and 96 kHz stereo, switchable by the OS
 - 16-bit PCM
 - Philips I2S
 - 32-bit I2S slots, giving a conventional 64fs BCLK for external audio DACs
@@ -49,22 +49,9 @@ The 12.288 MHz oscillator is:
 44.1 kHz and 88.2 kHz are not supported because this board does not have
 an 11.2896 MHz-family clock.
 
-## 96 kHz Build
-
-Use the alternate defaults file once 48 kHz is stable:
-
-```sh
-idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults.96k" reconfigure
-idf.py build
-```
-
-Or set both of these options in `menuconfig`:
-
-- `USB Device UAC Configuration -> USB Device UAC -> UAC sample rate = 96000`
-- `USB to I2S DAC -> USB/I2S sample rate = 96 kHz`
-
-The firmware has a compile-time check so the USB descriptor rate and I2S
-rate cannot silently diverge.
+When macOS changes the selected sample rate, the firmware stops I2S,
+clears the audio buffer, recreates the I2S channel at the new rate, and
+waits for prefill before restarting playback.
 
 ## VS Code / PlatformIO Build
 
@@ -80,19 +67,21 @@ build_flags =
     -DAUDIO_PIN_DATA=6
 ```
 
+Keep the `-D` prefix, but make the GPIO value itself positive. For GPIO 4
+use `-DAUDIO_PIN_BCLK=4`, not `-DAUDIO_PIN_BCLK=-4`.
+
 Then use the PlatformIO sidebar:
 
-- `esp32s3_48k -> Build`
-- `esp32s3_48k -> Upload`
-- `esp32s3_48k -> Monitor`
-
-For the experimental 96 kHz build, select the `esp32s3_96k` environment.
+- `esp32s3_audio -> Build`
+- `esp32s3_audio -> Upload`
+- `esp32s3_audio -> Monitor`
 
 PlatformIO is used here only as the VS Code build/flash front-end. The
 firmware still uses ESP-IDF and TinyUSB, not Arduino.
 
-The first PlatformIO build will download the managed Espressif
-`usb_device_uac` component, so the first build may take a little longer.
+The Espressif `usb_device_uac` component is vendored in this repo with a
+small CMake adjustment for PlatformIO. The first build may still take a
+little longer while PlatformIO prepares ESP-IDF.
 
 ## Native ESP-IDF Build
 
@@ -102,15 +91,13 @@ idf.py build
 idf.py flash monitor
 ```
 
-Serial logs report USB mount/unmount, the configured sample rate, I2S
-start/stop, mute/volume requests, and software buffer underrun/overrun
-counts.
+Serial logs report USB mount/unmount from the UAC component, plus the
+configured sample rate, I2S start/stop, mute/volume requests, and
+software buffer underrun/overrun counts from the app.
 
 ## 24-bit Note
 
-The code keeps the I2S side ready for 24-bit samples, but the default
-managed Espressif `usb_device_uac` component exposes rate and channel
-configuration more directly than bit-depth configuration. The shipped
-default is therefore 16-bit stereo. Move to 24-bit only after confirming
-the USB descriptors presented to the host advertise 24-bit speaker PCM,
-or by switching to custom TinyUSB UAC descriptors.
+The code keeps the I2S side ready for 24-bit samples, but the shipped
+default is 16-bit stereo while we bring up the board. Move to 24-bit only
+after confirming the USB descriptors presented to the host advertise
+24-bit speaker PCM cleanly on your operating system.
