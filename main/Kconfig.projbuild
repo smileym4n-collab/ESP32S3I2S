@@ -1,23 +1,30 @@
 menu "USB to I2S DAC"
 
     choice AUDIO_SAMPLE_RATE_CHOICE
-        prompt "USB/I2S sample rate"
+        prompt "Default USB/I2S sample rate"
         default AUDIO_SAMPLE_RATE_48000
         help
-            The board has a fixed 12.288 MHz MCLK oscillator wired directly
-            to the PCM1798 DAC. 48 kHz uses 256fs and 96 kHz uses 128fs.
-            44.1 kHz and 88.2 kHz are intentionally not offered.
+            Default rate used at boot before the USB host chooses a rate.
+            The firmware advertises 44.1, 48, 88.2, and 96 kHz.
+
+        config AUDIO_SAMPLE_RATE_44100
+            bool "44.1 kHz"
 
         config AUDIO_SAMPLE_RATE_48000
             bool "48 kHz"
 
+        config AUDIO_SAMPLE_RATE_88200
+            bool "88.2 kHz"
+
         config AUDIO_SAMPLE_RATE_96000
-            bool "96 kHz (experimental)"
+            bool "96 kHz"
     endchoice
 
     config AUDIO_SAMPLE_RATE
         int
+        default 44100 if AUDIO_SAMPLE_RATE_44100
         default 48000 if AUDIO_SAMPLE_RATE_48000
+        default 88200 if AUDIO_SAMPLE_RATE_88200
         default 96000 if AUDIO_SAMPLE_RATE_96000
 
     choice AUDIO_BIT_DEPTH_CHOICE
@@ -48,22 +55,36 @@ menu "USB to I2S DAC"
 
     config AUDIO_I2S_BCLK_GPIO
         int "I2S BCLK GPIO"
-        default -1
+        default 4
         help
-            Set this to the board's BCLK pin. The default intentionally
-            fails at runtime until the custom board pinout is filled in.
+            Board pin D4. Bit clock output to the DAC.
 
     config AUDIO_I2S_WS_GPIO
         int "I2S LRCK/WS GPIO"
-        default -1
+        default 5
         help
-            Set this to the board's LRCK/WS pin.
+            Board pin D5. LRCK/word-select output to the DAC.
 
     config AUDIO_I2S_DATA_GPIO
         int "I2S DATA GPIO"
-        default -1
+        default 6
         help
             Set this to the board's serial data output pin feeding the DAC.
+
+    config AUDIO_I2S_MCLK_GPIO
+        int "I2S external SCK/MCLK input GPIO"
+        default 15
+        help
+            Board pin D15. Selected oscillator from the 5PB1102PGGK clock
+            buffer, used as the ESP32-S3 I2S external MCLK input when the
+            ESP-IDF driver supports I2S_CLK_SRC_EXTERNAL.
+
+    config AUDIO_OSC_SELECT_GPIO
+        int "Oscillator select GPIO"
+        default 17
+        help
+            Board pin D17. LOW selects 22.5792 MHz for 44.1/88.2 kHz.
+            HIGH selects 24.5760 MHz for 48/96 kHz.
 
     config AUDIO_I2S_DMA_DESC_NUM
         int "I2S DMA descriptor count"

@@ -19,7 +19,12 @@
 
 static const char *TAG = "usbd_uac";
 
-const uint32_t sample_rates[] = {MIN_SAMPLE_RATE, MAX_SAMPLE_RATE};
+const uint32_t sample_rates[] = {
+    44100,
+    48000,
+    88200,
+    96000,
+};
 
 #define N_SAMPLE_RATES  TU_ARRAY_SIZE(sample_rates)
 
