@@ -133,6 +133,9 @@ static volatile uint32_t s_short_i2s_writes;
 static volatile int64_t s_last_usb_audio_us;
 static volatile uint32_t s_current_sample_rate = AUDIO_DEFAULT_SAMPLE_RATE;
 static bool s_i2s_available;
+#if CONFIG_AUDIO_TEST_TONE
+static uint32_t s_test_tone_phase;
+#endif
 
 typedef struct {
     uint32_t sample_rate;
@@ -362,6 +365,38 @@ static void audio_apply_mute(uint8_t *buf, size_t len)
     }
 }
 
+#if CONFIG_AUDIO_TEST_TONE
+static void audio_fill_test_tone(uint8_t *buf, size_t len)
+{
+    size_t frames = len / AUDIO_BYTES_PER_FRAME;
+    uint32_t half_period_frames = s_current_sample_rate / 2000;
+    if (half_period_frames == 0) {
+        half_period_frames = 1;
+    }
+
+    for (size_t frame = 0; frame < frames; frame++) {
+        int32_t sample = ((s_test_tone_phase / half_period_frames) & 1) ? -8192 : 8192;
+        for (int channel = 0; channel < AUDIO_CHANNELS; channel++) {
+#if CONFIG_AUDIO_BITS_PER_SAMPLE == 16
+            int16_t sample16 = (int16_t)sample;
+            *buf++ = (uint8_t)(sample16 & 0xff);
+            *buf++ = (uint8_t)((sample16 >> 8) & 0xff);
+#else
+            int32_t sample24 = sample << 8;
+            *buf++ = (uint8_t)(sample24 & 0xff);
+            *buf++ = (uint8_t)((sample24 >> 8) & 0xff);
+            *buf++ = (uint8_t)((sample24 >> 16) & 0xff);
+#endif
+        }
+
+        s_test_tone_phase++;
+        if (s_test_tone_phase >= half_period_frames * 2) {
+            s_test_tone_phase = 0;
+        }
+    }
+}
+#endif
+
 static void audio_i2s_task(void *arg)
 {
     (void)arg;
@@ -370,6 +405,18 @@ static void audio_i2s_task(void *arg)
 
     while (true) {
         if (!s_i2s_running) {
+#if CONFIG_AUDIO_TEST_TONE
+            xSemaphoreTake(s_i2s_lock, portMAX_DELAY);
+            if (s_i2s_tx != NULL && i2s_channel_enable(s_i2s_tx) == ESP_OK) {
+                s_i2s_running = true;
+                ESP_LOGW(TAG, "I2S test tone enabled at %" PRIu32 " Hz; USB audio data is bypassed",
+                         s_current_sample_rate);
+            }
+            xSemaphoreGive(s_i2s_lock);
+            if (!s_i2s_running) {
+                vTaskDelay(pdMS_TO_TICKS(10));
+            }
+#else
             if (xStreamBufferBytesAvailable(s_audio_stream) >= audio_prefill_bytes()) {
                 xSemaphoreTake(s_i2s_lock, portMAX_DELAY);
                 if (s_i2s_tx != NULL && i2s_channel_enable(s_i2s_tx) == ESP_OK) {
@@ -382,14 +429,19 @@ static void audio_i2s_task(void *arg)
             } else {
                 vTaskDelay(pdMS_TO_TICKS(1));
             }
+#endif
             continue;
         }
 
+#if CONFIG_AUDIO_TEST_TONE
+        audio_fill_test_tone(chunk, sizeof(chunk));
+#else
         size_t got = xStreamBufferReceive(s_audio_stream, chunk, sizeof(chunk), pdMS_TO_TICKS(2));
         if (got < sizeof(chunk)) {
             memset(chunk + got, 0, sizeof(chunk) - got);
             s_underruns++;
         }
+#endif
 
         audio_apply_mute(chunk, sizeof(chunk));
 
@@ -415,6 +467,7 @@ static void audio_i2s_task(void *arg)
                      (unsigned)sizeof(chunk));
         }
 
+#if !CONFIG_AUDIO_TEST_TONE
         const int64_t idle_ms = (esp_timer_get_time() - s_last_usb_audio_us) / 1000;
         if (idle_ms > CONFIG_AUDIO_IDLE_STOP_MS) {
             xSemaphoreTake(s_i2s_lock, portMAX_DELAY);
@@ -426,6 +479,7 @@ static void audio_i2s_task(void *arg)
             xSemaphoreGive(s_i2s_lock);
             ESP_LOGI(TAG, "I2S stopped after %" PRId64 " ms without USB audio", idle_ms);
         }
+#endif
     }
 }
 
@@ -520,6 +574,9 @@ void app_main(void)
              CONFIG_AUDIO_BITS_PER_SAMPLE,
              AUDIO_PIN_MCLK_IN,
              AUDIO_PIN_OSC_SELECT);
+#if CONFIG_AUDIO_TEST_TONE
+    ESP_LOGW(TAG, "Audio test tone build is enabled; USB audio data will not be played");
+#endif
 
 #if !AUDIO_EXTERNAL_MCLK_SUPPORTED
     ESP_LOGE(TAG,

@@ -66,8 +66,8 @@ typedef struct {
     uint32_t current_sample_rate;                                // Current resolution, update on format change
     TaskHandle_t mic_task_handle;
     TaskHandle_t spk_task_handle;
-    size_t spk_bytes_per_ms;
-    size_t mic_bytes_per_ms;
+    uint32_t spk_frame_remainder;
+    uint32_t mic_frame_remainder;
     bool spk_active;
     bool mic_active;
 } uac_device_t;
@@ -87,16 +87,23 @@ static bool sample_rate_supported(uint32_t sample_rate)
     return false;
 }
 
-static void update_audio_byte_rates(uint32_t sample_rate)
+static void reset_audio_rate_state(uint32_t sample_rate)
 {
+    (void)sample_rate;
 #if SPEAK_CHANNEL_NUM
-    s_uac_device->spk_bytes_per_ms =
-        sample_rate / 1000 * SPEAK_CHANNEL_NUM * CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_RX;
+    s_uac_device->spk_frame_remainder = 0;
 #endif
 #if MIC_CHANNEL_NUM
-    s_uac_device->mic_bytes_per_ms =
-        sample_rate / 1000 * MIC_CHANNEL_NUM * CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_TX;
+    s_uac_device->mic_frame_remainder = 0;
 #endif
+}
+
+static size_t audio_bytes_for_interval(uint32_t sample_rate, uint32_t interval_ms,
+                                       uint32_t *frame_remainder, size_t bytes_per_frame)
+{
+    uint32_t frames = sample_rate * interval_ms + *frame_remainder;
+    *frame_remainder = frames % 1000;
+    return (frames / 1000) * bytes_per_frame;
 }
 
 static void usb_phy_init(void)
@@ -209,7 +216,7 @@ static bool tud_audio_clock_set_request(uint8_t rhport, audio_control_request_t 
 
         if (target_sample_rate != s_uac_device->current_sample_rate) {
             s_uac_device->current_sample_rate = target_sample_rate;
-            update_audio_byte_rates(target_sample_rate);
+            reset_audio_rate_state(target_sample_rate);
             s_uac_device->spk_data_size = 0;
             s_uac_device->mic_data_size = 0;
             ESP_LOGI(TAG, "Host selected sample rate: %" PRIu32 " Hz", target_sample_rate);
@@ -381,7 +388,7 @@ bool tud_audio_set_itf_cb(uint8_t rhport, tusb_control_request_t const *p_reques
         s_uac_device->spk_data_size = 0;
         s_uac_device->spk_resolution = spk_resolutions_per_format[alt - 1];
         s_uac_device->spk_active = true;
-        update_audio_byte_rates(s_uac_device->current_sample_rate);
+        reset_audio_rate_state(s_uac_device->current_sample_rate);
         xTaskNotifyGive(s_uac_device->spk_task_handle);
         TU_LOG1("Speaker interface %d-%d opened", itf, alt);
         printf("Speaker interface %d-%d opened\n", itf, alt);
@@ -393,7 +400,7 @@ bool tud_audio_set_itf_cb(uint8_t rhport, tusb_control_request_t const *p_reques
         s_uac_device->mic_data_size = 0;
         s_uac_device->mic_resolution = mic_resolutions_per_format[alt - 1];
         s_uac_device->mic_active = true;
-        update_audio_byte_rates(s_uac_device->current_sample_rate);
+        reset_audio_rate_state(s_uac_device->current_sample_rate);
         xTaskNotifyGive(s_uac_device->mic_task_handle);
         TU_LOG1("Microphone interface %d-%d opened", itf, alt);
         printf("Microphone interface %d-%d opened\n", itf, alt);
@@ -426,15 +433,26 @@ bool tud_audio_rx_done_isr(uint8_t rhport, uint16_t n_bytes_received, uint8_t fu
 
     int bytes_remained = tud_audio_n_available(func_id);
 
-    size_t bytes_require = s_uac_device->spk_bytes_per_ms;
+    size_t bytes_require;
 
     if (new_play) {
         /*!< Buffer a segment of data in the I2S and control the data size to be half of the UAC FIFO size. */
-        bytes_require = SPK_INTERVAL_MS * s_uac_device->spk_bytes_per_ms / 2;
+        s_uac_device->spk_frame_remainder = 0;
+        bytes_require = audio_bytes_for_interval(
+            s_uac_device->current_sample_rate,
+            SPK_INTERVAL_MS / 2,
+            &s_uac_device->spk_frame_remainder,
+            SPEAK_CHANNEL_NUM * CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_RX);
         if (bytes_remained < bytes_require) {
             return true;
         }
         new_play = false;
+    } else {
+        bytes_require = audio_bytes_for_interval(
+            s_uac_device->current_sample_rate,
+            1,
+            &s_uac_device->spk_frame_remainder,
+            SPEAK_CHANNEL_NUM * CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_RX);
     }
 
     s_uac_device->spk_data_size = tud_audio_n_read(func_id, s_uac_device->spk_buf, bytes_require);
@@ -448,7 +466,11 @@ bool tud_audio_tx_done_isr(uint8_t rhport, uint16_t n_bytes_sent, uint8_t func_i
     (void)n_bytes_sent;
     (void)ep_in;
     (void)cur_alt_setting;
-    size_t bytes_require = MIC_INTERVAL_MS * s_uac_device->mic_bytes_per_ms;
+    size_t bytes_require = audio_bytes_for_interval(
+        s_uac_device->current_sample_rate,
+        MIC_INTERVAL_MS,
+        &s_uac_device->mic_frame_remainder,
+        MIC_CHANNEL_NUM * CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_TX);
 
     tu_fifo_t *sw_in_fifo = tud_audio_n_get_ep_in_ff(func_id);
     uint16_t fifo_remained = tu_fifo_remaining(sw_in_fifo);
@@ -502,7 +524,11 @@ static void usb_mic_task(void *pvParam)
         }
         // clear the notification
         // read data from the microphone chunk by chunk
-        size_t bytes_require = MIC_INTERVAL_MS * s_uac_device->mic_bytes_per_ms;
+        size_t bytes_require = audio_bytes_for_interval(
+            s_uac_device->current_sample_rate,
+            MIC_INTERVAL_MS,
+            &s_uac_device->mic_frame_remainder,
+            MIC_CHANNEL_NUM * CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_TX);
         if (s_uac_device->user_cfg.input_cb) {
             size_t bytes_read = 0;
             esp_err_t ret = s_uac_device->user_cfg.input_cb((uint8_t *)s_uac_device->mic_buf_write, bytes_require, &bytes_read, s_uac_device->user_cfg.cb_ctx);
@@ -539,7 +565,7 @@ esp_err_t uac_device_init(uac_device_config_t *config)
     s_uac_device->user_cfg.set_volume_cb = config->set_volume_cb;
     s_uac_device->user_cfg.set_sample_rate_cb = config->set_sample_rate_cb;
     s_uac_device->current_sample_rate = DEFAULT_SAMPLE_RATE;
-    update_audio_byte_rates(s_uac_device->current_sample_rate);
+    reset_audio_rate_state(s_uac_device->current_sample_rate);
     s_uac_device->mic_buf_write = s_uac_device->mic_buf1;
     s_uac_device->mic_buf_read = s_uac_device->mic_buf2;
 

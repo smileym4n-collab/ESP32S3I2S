@@ -114,4 +114,11 @@ menu "USB to I2S DAC"
         default 1000
         range 50 2000
 
+    config AUDIO_TEST_TONE
+        bool "Generate 1 kHz I2S test tone instead of USB audio"
+        default n
+        help
+            Bypass USB audio data and write a simple stereo test tone to the
+            I2S DAC path. Use this only for board bring-up diagnostics.
+
 endmenu
