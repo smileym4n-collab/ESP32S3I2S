@@ -86,6 +86,14 @@ menu "USB to I2S DAC"
             Board pin D17. LOW selects 22.5792 MHz for 44.1/88.2 kHz.
             HIGH selects 24.5760 MHz for 48/96 kHz.
 
+    config AUDIO_OSC_SELECT_INVERT
+        bool "Invert oscillator select GPIO polarity"
+        default n
+        help
+            Enable this if the oscillator mux inputs are wired opposite to the
+            default firmware assumption. With this enabled, 44.1/88.2 kHz
+            drives the select GPIO HIGH and 48/96 kHz drives it LOW.
+
     config AUDIO_I2S_DMA_DESC_NUM
         int "I2S DMA descriptor count"
         default 8

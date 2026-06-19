@@ -130,6 +130,11 @@ static volatile uint32_t s_volume = 100;
 static volatile uint32_t s_underruns;
 static volatile uint32_t s_overruns;
 static volatile uint32_t s_short_i2s_writes;
+static volatile uint32_t s_slow_i2s_writes;
+static volatile uint64_t s_usb_bytes;
+static volatile uint64_t s_i2s_bytes;
+static volatile uint32_t s_last_i2s_write_us;
+static volatile uint32_t s_max_i2s_write_us;
 static volatile int64_t s_last_usb_audio_us;
 static volatile uint32_t s_current_sample_rate = AUDIO_DEFAULT_SAMPLE_RATE;
 static bool s_i2s_available;
@@ -194,6 +199,11 @@ static i2s_mclk_multiple_t audio_mclk_multiple(uint32_t sample_rate, uint32_t os
 
 static esp_err_t audio_select_oscillator(const audio_clock_config_t *clock_cfg)
 {
+    bool select_high = clock_cfg->osc_select_high;
+#if CONFIG_AUDIO_OSC_SELECT_INVERT
+    select_high = !select_high;
+#endif
+
     gpio_config_t io_conf = {
         .pin_bit_mask = 1ULL << AUDIO_PIN_OSC_SELECT,
         .mode = GPIO_MODE_OUTPUT,
@@ -202,17 +212,23 @@ static esp_err_t audio_select_oscillator(const audio_clock_config_t *clock_cfg)
         .intr_type = GPIO_INTR_DISABLE,
     };
     ESP_RETURN_ON_ERROR(gpio_config(&io_conf), TAG, "configure oscillator select GPIO");
-    ESP_RETURN_ON_ERROR(gpio_set_level(AUDIO_PIN_OSC_SELECT, clock_cfg->osc_select_high ? 1 : 0),
+    ESP_RETURN_ON_ERROR(gpio_set_level(AUDIO_PIN_OSC_SELECT, select_high ? 1 : 0),
                         TAG, "set oscillator select GPIO");
 
     ESP_LOGI(TAG,
              "Clock select: USB rate=%" PRIu32 " Hz, oscillator family=%s, oscillator=%" PRIu32
-             " Hz, D%d=%s",
+             " Hz, D%d=%s%s",
              clock_cfg->sample_rate,
              clock_cfg->family,
              clock_cfg->oscillator_hz,
              AUDIO_PIN_OSC_SELECT,
-             clock_cfg->osc_select_high ? "HIGH" : "LOW");
+             select_high ? "HIGH" : "LOW",
+#if CONFIG_AUDIO_OSC_SELECT_INVERT
+             " (inverted)"
+#else
+             ""
+#endif
+             );
     return ESP_OK;
 }
 
@@ -348,6 +364,8 @@ static void audio_i2s_reconfigure(uint32_t sample_rate)
     xSemaphoreTake(s_i2s_lock, portMAX_DELAY);
     audio_i2s_deinit_locked();
     xStreamBufferReset(s_audio_stream);
+    s_last_i2s_write_us = 0;
+    s_max_i2s_write_us = 0;
     esp_err_t err = audio_i2s_init(sample_rate);
     if (err != ESP_OK) {
         s_i2s_available = false;
@@ -448,13 +466,22 @@ static void audio_i2s_task(void *arg)
         size_t bytes_written = 0;
         xSemaphoreTake(s_i2s_lock, portMAX_DELAY);
         esp_err_t err = ESP_ERR_INVALID_STATE;
-        if (s_i2s_tx != NULL) {
+        if (s_i2s_tx != NULL && s_i2s_running) {
+            int64_t write_start_us = esp_timer_get_time();
             err = i2s_channel_write(
                 s_i2s_tx,
                 chunk,
                 sizeof(chunk),
                 &bytes_written,
                 pdMS_TO_TICKS(20));
+            uint32_t write_us = (uint32_t)(esp_timer_get_time() - write_start_us);
+            s_last_i2s_write_us = write_us;
+            if (write_us > s_max_i2s_write_us) {
+                s_max_i2s_write_us = write_us;
+            }
+            if (write_us > 5000) {
+                s_slow_i2s_writes++;
+            }
         }
         xSemaphoreGive(s_i2s_lock);
 
@@ -465,6 +492,8 @@ static void audio_i2s_task(void *arg)
                      esp_err_to_name(err),
                      (unsigned)bytes_written,
                      (unsigned)sizeof(chunk));
+        } else {
+            s_i2s_bytes += bytes_written;
         }
 
 #if !CONFIG_AUDIO_TEST_TONE
@@ -490,6 +519,9 @@ static void audio_stats_task(void *arg)
     uint32_t last_underruns = 0;
     uint32_t last_overruns = 0;
     uint32_t last_short_writes = 0;
+    uint32_t last_slow_writes = 0;
+    uint64_t last_usb_bytes = 0;
+    uint64_t last_i2s_bytes = 0;
 
     while (true) {
         vTaskDelay(pdMS_TO_TICKS(AUDIO_STATS_INTERVAL_MS));
@@ -497,21 +529,39 @@ static void audio_stats_task(void *arg)
         uint32_t underruns = s_underruns;
         uint32_t overruns = s_overruns;
         uint32_t short_writes = s_short_i2s_writes;
+        uint32_t slow_writes = s_slow_i2s_writes;
+        uint64_t usb_bytes = s_usb_bytes;
+        uint64_t i2s_bytes = s_i2s_bytes;
+        uint32_t usb_bytes_per_s = (uint32_t)((usb_bytes - last_usb_bytes) * 1000 / AUDIO_STATS_INTERVAL_MS);
+        uint32_t i2s_bytes_per_s = (uint32_t)((i2s_bytes - last_i2s_bytes) * 1000 / AUDIO_STATS_INTERVAL_MS);
 
         if (underruns != last_underruns ||
             overruns != last_overruns ||
-            short_writes != last_short_writes) {
+            short_writes != last_short_writes ||
+            slow_writes != last_slow_writes ||
+            usb_bytes != last_usb_bytes ||
+            i2s_bytes != last_i2s_bytes) {
             ESP_LOGW(TAG,
                      "audio stats: underruns=%" PRIu32 " overruns=%" PRIu32
-                     " short_i2s_writes=%" PRIu32 " buffered=%u bytes i2s=%s",
+                     " short_i2s_writes=%" PRIu32 " slow_i2s_writes=%" PRIu32
+                     " buffered=%u bytes usb=%" PRIu32 " B/s i2s=%" PRIu32
+                     " B/s last_write=%" PRIu32 " us max_write=%" PRIu32 " us i2s=%s",
                      underruns,
                      overruns,
                      short_writes,
+                     slow_writes,
                      (unsigned)xStreamBufferBytesAvailable(s_audio_stream),
+                     usb_bytes_per_s,
+                     i2s_bytes_per_s,
+                     s_last_i2s_write_us,
+                     s_max_i2s_write_us,
                      s_i2s_running ? "running" : "stopped");
             last_underruns = underruns;
             last_overruns = overruns;
             last_short_writes = short_writes;
+            last_slow_writes = slow_writes;
+            last_usb_bytes = usb_bytes;
+            last_i2s_bytes = i2s_bytes;
         }
     }
 }
@@ -541,6 +591,7 @@ static esp_err_t uac_device_output_cb(uint8_t *buf, size_t len, void *cb_ctx)
     if (written != len) {
         s_overruns++;
     }
+    s_usb_bytes += written;
 
     return ESP_OK;
 }
