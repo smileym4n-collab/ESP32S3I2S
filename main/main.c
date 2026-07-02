@@ -14,8 +14,9 @@
  *   with GPIO D17. The selected clock is buffered and fed to the ESP32-S3 on
  *   GPIO D15 as an external MCLK input, and to the external DAC MCLK header.
  *   The ESP32-S3 outputs BCLK, LRCK/WS, and DATA in standard Philips format.
- *   I2S slots are widened to 32 bits so the DAC sees the conventional 64fs
- *   bit clock even for 16-bit USB PCM.
+ *   The wire format is always 32-bit stereo I2S slots so the DAC sees the
+ *   conventional 64fs bit clock. 16-bit USB PCM is sign-extended into the
+ *   most-significant bits of each 32-bit I2S sample word.
  *
  * Buffering:
  *   USB callbacks enqueue received PCM into a FreeRTOS stream buffer. A
@@ -48,11 +49,14 @@
 #define AUDIO_MAX_SAMPLE_RATE       96000
 #define AUDIO_OSC_44K_FAMILY_HZ     22579200
 #define AUDIO_OSC_48K_FAMILY_HZ     24576000
-#define AUDIO_BYTES_PER_SAMPLE      (CONFIG_AUDIO_BITS_PER_SAMPLE / 8)
-#define AUDIO_BYTES_PER_FRAME       (AUDIO_CHANNELS * AUDIO_BYTES_PER_SAMPLE)
-#define AUDIO_BUFFER_BYTES          ((AUDIO_MAX_SAMPLE_RATE * CONFIG_AUDIO_STREAM_BUFFER_MS / 1000) * AUDIO_BYTES_PER_FRAME)
+#define AUDIO_USB_BYTES_PER_SAMPLE  (CONFIG_AUDIO_BITS_PER_SAMPLE / 8)
+#define AUDIO_USB_BYTES_PER_FRAME   (AUDIO_CHANNELS * AUDIO_USB_BYTES_PER_SAMPLE)
+#define AUDIO_I2S_BYTES_PER_SAMPLE  4
+#define AUDIO_I2S_BYTES_PER_FRAME   (AUDIO_CHANNELS * AUDIO_I2S_BYTES_PER_SAMPLE)
+#define AUDIO_BUFFER_BYTES          ((AUDIO_MAX_SAMPLE_RATE * CONFIG_AUDIO_STREAM_BUFFER_MS / 1000) * AUDIO_USB_BYTES_PER_FRAME)
 #define AUDIO_I2S_CHUNK_FRAMES      (CONFIG_AUDIO_I2S_DMA_FRAME_NUM / 2)
-#define AUDIO_I2S_CHUNK_BYTES       (AUDIO_I2S_CHUNK_FRAMES * AUDIO_BYTES_PER_FRAME)
+#define AUDIO_USB_CHUNK_BYTES       (AUDIO_I2S_CHUNK_FRAMES * AUDIO_USB_BYTES_PER_FRAME)
+#define AUDIO_I2S_CHUNK_BYTES       (AUDIO_I2S_CHUNK_FRAMES * AUDIO_I2S_BYTES_PER_FRAME)
 #define AUDIO_STATS_INTERVAL_MS     5000
 
 #ifndef AUDIO_PIN_BCLK
@@ -103,20 +107,20 @@
 #error "CONFIG_UAC_MIC_CHANNEL_NUM must be 0 for speaker-only firmware"
 #endif
 
-#if CONFIG_AUDIO_BITS_PER_SAMPLE != 16 && CONFIG_AUDIO_BITS_PER_SAMPLE != 24
-#error "Only 16-bit and 24-bit stereo PCM are supported"
-#endif
-
-#if CONFIG_AUDIO_BITS_PER_SAMPLE == 24
-#warning "Verify the USB UAC speaker descriptors advertise 24-bit PCM before using this build"
-#endif
-
-#if CONFIG_AUDIO_BITS_PER_SAMPLE == 24 && (CONFIG_AUDIO_I2S_DMA_FRAME_NUM % 3) != 0
-#error "For 24-bit I2S, CONFIG_AUDIO_I2S_DMA_FRAME_NUM must be a multiple of 3"
+#if CONFIG_AUDIO_BITS_PER_SAMPLE != 16
+#error "This firmware expects 16-bit USB PCM and outputs 32-bit Philips I2S words"
 #endif
 
 #if CONFIG_AUDIO_I2S_DMA_FRAME_NUM < 96
 #error "CONFIG_AUDIO_I2S_DMA_FRAME_NUM must be at least 96 frames"
+#endif
+
+#ifndef CONFIG_AUDIO_I2S_BCLK_INVERT
+#define CONFIG_AUDIO_I2S_BCLK_INVERT 0
+#endif
+
+#ifndef CONFIG_AUDIO_I2S_WS_INVERT
+#define CONFIG_AUDIO_I2S_WS_INVERT 0
 #endif
 
 static const char *TAG = "usb_i2s_dac";
@@ -194,7 +198,14 @@ static bool audio_sample_rate_supported(uint32_t sample_rate)
 
 static i2s_mclk_multiple_t audio_mclk_multiple(uint32_t sample_rate, uint32_t oscillator_hz)
 {
-    return (i2s_mclk_multiple_t)(oscillator_hz / sample_rate);
+    /*
+     * The board sends the selected oscillator directly to the DAC as SCK/MCLK.
+     * The ESP32-S3 uses that same signal as an external I2S source clock. Keep
+     * the I2S peripheral's internal MCLK one divider below the external source
+     * so the hardware clock tree has a real /2 source divider instead of a
+     * fragile 1:1 external-MCLK path.
+     */
+    return (i2s_mclk_multiple_t)(oscillator_hz / sample_rate / 2);
 }
 
 static esp_err_t audio_select_oscillator(const audio_clock_config_t *clock_cfg)
@@ -234,7 +245,7 @@ static esp_err_t audio_select_oscillator(const audio_clock_config_t *clock_cfg)
 
 static size_t audio_prefill_bytes(void)
 {
-    return (s_current_sample_rate * CONFIG_AUDIO_PREFILL_MS / 1000) * AUDIO_BYTES_PER_FRAME;
+    return (s_current_sample_rate * CONFIG_AUDIO_PREFILL_MS / 1000) * AUDIO_USB_BYTES_PER_FRAME;
 }
 
 static esp_err_t audio_i2s_init(uint32_t sample_rate)
@@ -269,14 +280,14 @@ static esp_err_t audio_i2s_init(uint32_t sample_rate)
 
     ESP_RETURN_ON_ERROR(i2s_new_channel(&chan_cfg, &s_i2s_tx, NULL), TAG, "create I2S TX channel");
 
-    i2s_data_bit_width_t data_width = I2S_DATA_BIT_WIDTH_16BIT;
-#if CONFIG_AUDIO_BITS_PER_SAMPLE == 24
-    data_width = I2S_DATA_BIT_WIDTH_24BIT;
-#endif
+    i2s_std_slot_config_t slot_cfg =
+        I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO);
+    slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_32BIT;
+    slot_cfg.ws_width = 32;
 
     i2s_std_config_t std_cfg = {
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(sample_rate),
-        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(data_width, I2S_SLOT_MODE_STEREO),
+        .slot_cfg = slot_cfg,
         .gpio_cfg = {
             .mclk = AUDIO_PIN_MCLK_IN,
             .bclk = AUDIO_PIN_BCLK,
@@ -285,19 +296,11 @@ static esp_err_t audio_i2s_init(uint32_t sample_rate)
             .din = I2S_GPIO_UNUSED,
             .invert_flags = {
                 .mclk_inv = false,
-                .bclk_inv = false,
-                .ws_inv = false,
+                .bclk_inv = CONFIG_AUDIO_I2S_BCLK_INVERT,
+                .ws_inv = CONFIG_AUDIO_I2S_WS_INVERT,
             },
         },
     };
-
-    /*
-     * Audio DACs commonly expect a 64fs BCLK in Philips I2S mode. Keeping
-     * 32-bit slots gives 3.072 MHz BCLK at 48 kHz and 6.144 MHz at 96 kHz.
-     * The ESP32-S3 still transmits only the configured sample width.
-     */
-    std_cfg.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_32BIT;
-    std_cfg.slot_cfg.ws_width = 32;
 
     /*
      * The selected oscillator is wired to the ESP32-S3 MCLK input and the DAC
@@ -317,15 +320,19 @@ static esp_err_t audio_i2s_init(uint32_t sample_rate)
     }
 
     ESP_LOGI(TAG,
-             "I2S ready: rate=%d Hz, bits=%d, BCLK=D%d, WS=D%d, DATA=D%d, external MCLK input=D%d, "
-             "ext_mclk=%" PRIu32 " Hz, mclk_multiple=%d, external_mclk_used=yes",
+             "I2S ready: rate=%d Hz, USB bits=%d, I2S bits=32, BCLK=D%d, WS=D%d, DATA=D%d, external MCLK input=D%d, "
+             "format=Philips I2S, slot_width=32, BCLK_inv=%s, WS_inv=%s, "
+             "external_sck=%" PRIu32 " Hz (%" PRIu32 "fs), i2s_mclk_multiple=%d, external_mclk_used=yes",
              (int)sample_rate,
              CONFIG_AUDIO_BITS_PER_SAMPLE,
              AUDIO_PIN_BCLK,
              AUDIO_PIN_WS,
              AUDIO_PIN_DATA,
              AUDIO_PIN_MCLK_IN,
+             CONFIG_AUDIO_I2S_BCLK_INVERT ? "yes" : "no",
+             CONFIG_AUDIO_I2S_WS_INVERT ? "yes" : "no",
              clock_cfg.oscillator_hz,
+             clock_cfg.oscillator_hz / sample_rate,
              (int)std_cfg.clk_cfg.mclk_multiple);
 
     return ESP_OK;
@@ -383,28 +390,45 @@ static void audio_apply_mute(uint8_t *buf, size_t len)
     }
 }
 
+static void audio_write_i2s_sample(uint8_t **buf, int32_t sample)
+{
+    *(*buf)++ = (uint8_t)(sample & 0xff);
+    *(*buf)++ = (uint8_t)((sample >> 8) & 0xff);
+    *(*buf)++ = (uint8_t)((sample >> 16) & 0xff);
+    *(*buf)++ = (uint8_t)((sample >> 24) & 0xff);
+}
+
+static int16_t audio_read_usb_sample(const uint8_t **buf)
+{
+    uint16_t raw = (uint16_t)(*buf)[0] | ((uint16_t)(*buf)[1] << 8);
+    *buf += 2;
+    return (int16_t)raw;
+}
+
+static void audio_usb_to_i2s_32(const uint8_t *usb, uint8_t *i2s, size_t frames)
+{
+    for (size_t frame = 0; frame < frames; frame++) {
+        for (int channel = 0; channel < AUDIO_CHANNELS; channel++) {
+            int32_t sample = (int32_t)audio_read_usb_sample(&usb) << 16;
+            audio_write_i2s_sample(&i2s, sample);
+        }
+    }
+}
+
 #if CONFIG_AUDIO_TEST_TONE
 static void audio_fill_test_tone(uint8_t *buf, size_t len)
 {
-    size_t frames = len / AUDIO_BYTES_PER_FRAME;
-    uint32_t half_period_frames = s_current_sample_rate / 2000;
+    size_t frames = len / AUDIO_I2S_BYTES_PER_FRAME;
+    uint32_t half_period_frames = s_current_sample_rate / 200;
     if (half_period_frames == 0) {
         half_period_frames = 1;
     }
 
     for (size_t frame = 0; frame < frames; frame++) {
-        int32_t sample = ((s_test_tone_phase / half_period_frames) & 1) ? -8192 : 8192;
+        int32_t sample = ((s_test_tone_phase / half_period_frames) & 1) ? -28000 : 28000;
+        sample <<= 16;
         for (int channel = 0; channel < AUDIO_CHANNELS; channel++) {
-#if CONFIG_AUDIO_BITS_PER_SAMPLE == 16
-            int16_t sample16 = (int16_t)sample;
-            *buf++ = (uint8_t)(sample16 & 0xff);
-            *buf++ = (uint8_t)((sample16 >> 8) & 0xff);
-#else
-            int32_t sample24 = sample << 8;
-            *buf++ = (uint8_t)(sample24 & 0xff);
-            *buf++ = (uint8_t)((sample24 >> 8) & 0xff);
-            *buf++ = (uint8_t)((sample24 >> 16) & 0xff);
-#endif
+            audio_write_i2s_sample(&buf, sample);
         }
 
         s_test_tone_phase++;
@@ -419,7 +443,8 @@ static void audio_i2s_task(void *arg)
 {
     (void)arg;
 
-    uint8_t chunk[AUDIO_I2S_CHUNK_BYTES];
+    uint8_t usb_chunk[AUDIO_USB_CHUNK_BYTES];
+    uint8_t i2s_chunk[AUDIO_I2S_CHUNK_BYTES];
 
     while (true) {
         if (!s_i2s_running) {
@@ -452,16 +477,19 @@ static void audio_i2s_task(void *arg)
         }
 
 #if CONFIG_AUDIO_TEST_TONE
-        audio_fill_test_tone(chunk, sizeof(chunk));
+        audio_fill_test_tone(i2s_chunk, sizeof(i2s_chunk));
 #else
-        size_t got = xStreamBufferReceive(s_audio_stream, chunk, sizeof(chunk), pdMS_TO_TICKS(2));
-        if (got < sizeof(chunk)) {
-            memset(chunk + got, 0, sizeof(chunk) - got);
+        size_t got = xStreamBufferReceive(s_audio_stream, usb_chunk, sizeof(usb_chunk), pdMS_TO_TICKS(2));
+        if (got < sizeof(usb_chunk)) {
+            memset(usb_chunk + got, 0, sizeof(usb_chunk) - got);
             s_underruns++;
         }
+        audio_usb_to_i2s_32(usb_chunk, i2s_chunk, AUDIO_I2S_CHUNK_FRAMES);
 #endif
 
-        audio_apply_mute(chunk, sizeof(chunk));
+#if !CONFIG_AUDIO_TEST_TONE
+        audio_apply_mute(i2s_chunk, sizeof(i2s_chunk));
+#endif
 
         size_t bytes_written = 0;
         xSemaphoreTake(s_i2s_lock, portMAX_DELAY);
@@ -470,8 +498,8 @@ static void audio_i2s_task(void *arg)
             int64_t write_start_us = esp_timer_get_time();
             err = i2s_channel_write(
                 s_i2s_tx,
-                chunk,
-                sizeof(chunk),
+                i2s_chunk,
+                sizeof(i2s_chunk),
                 &bytes_written,
                 pdMS_TO_TICKS(20));
             uint32_t write_us = (uint32_t)(esp_timer_get_time() - write_start_us);
@@ -485,13 +513,13 @@ static void audio_i2s_task(void *arg)
         }
         xSemaphoreGive(s_i2s_lock);
 
-        if (err != ESP_OK || bytes_written != sizeof(chunk)) {
+        if (err != ESP_OK || bytes_written != sizeof(i2s_chunk)) {
             s_short_i2s_writes++;
             ESP_LOGW(TAG,
                      "I2S short write: err=%s written=%u requested=%u",
                      esp_err_to_name(err),
                      (unsigned)bytes_written,
-                     (unsigned)sizeof(chunk));
+                     (unsigned)sizeof(i2s_chunk));
         } else {
             s_i2s_bytes += bytes_written;
         }
@@ -625,6 +653,10 @@ void app_main(void)
              CONFIG_AUDIO_BITS_PER_SAMPLE,
              AUDIO_PIN_MCLK_IN,
              AUDIO_PIN_OSC_SELECT);
+    ESP_LOGI(TAG,
+             "Audio frame sizes: USB=%d bytes/frame, I2S=%d bytes/frame; at 48 kHz expect usb=192000 B/s i2s=384000 B/s",
+             AUDIO_USB_BYTES_PER_FRAME,
+             AUDIO_I2S_BYTES_PER_FRAME);
 #if CONFIG_AUDIO_TEST_TONE
     ESP_LOGW(TAG, "Audio test tone build is enabled; USB audio data will not be played");
 #endif
@@ -649,7 +681,7 @@ void app_main(void)
                  "I2S disabled; USB can still enumerate for descriptor testing");
     }
 
-    s_audio_stream = xStreamBufferCreate(AUDIO_BUFFER_BYTES, AUDIO_BYTES_PER_FRAME);
+    s_audio_stream = xStreamBufferCreate(AUDIO_BUFFER_BYTES, AUDIO_USB_BYTES_PER_FRAME);
     if (s_audio_stream == NULL) {
         ESP_LOGE(TAG, "failed to create %u-byte audio stream buffer", (unsigned)AUDIO_BUFFER_BYTES);
         abort();

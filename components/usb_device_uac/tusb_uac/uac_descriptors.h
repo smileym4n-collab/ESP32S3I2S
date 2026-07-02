@@ -32,6 +32,18 @@ extern "C" {
 #include "uac_config.h"
 #include "sdkconfig.h"
 
+#if SPEAK_CHANNEL_NUM == 2
+#define UAC_SPK_CHANNEL_CONFIG (AUDIO_CHANNEL_CONFIG_FRONT_LEFT | AUDIO_CHANNEL_CONFIG_FRONT_RIGHT)
+#else
+#define UAC_SPK_CHANNEL_CONFIG AUDIO_CHANNEL_CONFIG_NON_PREDEFINED
+#endif
+
+#if CONFIG_UAC_SUPPORT_MACOS
+#define UAC_FB_EP_SIZE 3
+#else
+#define UAC_FB_EP_SIZE 4
+#endif
+
 #if !CONFIG_USB_DEVICE_UAC_AS_PART
 enum {
     ITF_NUM_AUDIO_CONTROL = 0,
@@ -172,7 +184,7 @@ enum {
     /* Clock Source Descriptor(4.7.2.1) */\
     TUD_AUDIO_DESC_CLK_SRC(/*_clkid*/ UAC2_ENTITY_CLOCK, /*_attr*/ 3, /*_ctrl*/ 7, /*_assocTerm*/ 0x00,  /*_stridx*/ 0x00),\
     /* Input Terminal Descriptor(4.7.2.4) */\
-    TUD_AUDIO_DESC_INPUT_TERM(/*_termid*/ UAC2_ENTITY_SPK_INPUT_TERMINAL, /*_termtype*/ AUDIO_TERM_TYPE_USB_STREAMING, /*_assocTerm*/ 0x00, /*_clkid*/ UAC2_ENTITY_CLOCK, /*_nchannelslogical*/ SPEAK_CHANNEL_NUM, /*_channelcfg*/ AUDIO_CHANNEL_CONFIG_NON_PREDEFINED, /*_idxchannelnames*/ 0x00, /*_ctrl*/ (AUDIO_CTRL_R << AUDIO_IN_TERM_CTRL_CONNECTOR_POS), /*_stridx*/ 0x00),\
+    TUD_AUDIO_DESC_INPUT_TERM(/*_termid*/ UAC2_ENTITY_SPK_INPUT_TERMINAL, /*_termtype*/ AUDIO_TERM_TYPE_USB_STREAMING, /*_assocTerm*/ 0x00, /*_clkid*/ UAC2_ENTITY_CLOCK, /*_nchannelslogical*/ SPEAK_CHANNEL_NUM, /*_channelcfg*/ UAC_SPK_CHANNEL_CONFIG, /*_idxchannelnames*/ 0x00, /*_ctrl*/ (AUDIO_CTRL_R << AUDIO_IN_TERM_CTRL_CONNECTOR_POS), /*_stridx*/ 0x00),\
     /* Feature Unit Descriptor(4.7.2.8) */\
     TUD_AUDIO_DESC_FEATURE_UNIT_N_CHANNEL(/*_length*/ TUD_AUDIO_DESC_SPK_FEATURE_UNIT_N_CHANNEL_LEN,/*_unitid*/ UAC2_ENTITY_SPK_FEATURE_UNIT, /*_srcid*/ UAC2_ENTITY_SPK_INPUT_TERMINAL, /*_stridx*/ 0x00, INPUT_CTRL),\
     /* Output Terminal Descriptor(4.7.2.5) */\
@@ -189,7 +201,7 @@ enum {
     /* Interface 1, Alternate 1 - alternate interface for data streaming */\
     TUD_AUDIO_DESC_STD_AS_INT(/*_itfnum*/ _itfnum + 1, /*_altset*/ 0x01, /*_nEPs*/ 0x02, /*_stridx*/ _stridx + 1),\
     /* Class-Specific AS Interface Descriptor(4.9.2) */\
-    TUD_AUDIO_DESC_CS_AS_INT(/*_termid*/ UAC2_ENTITY_SPK_INPUT_TERMINAL, /*_ctrl*/ AUDIO_CTRL_NONE, /*_formattype*/ AUDIO_FORMAT_TYPE_I, /*_formats*/ AUDIO_DATA_FORMAT_TYPE_I_PCM, /*_nchannelsphysical*/ SPEAK_CHANNEL_NUM, /*_channelcfg*/ AUDIO_CHANNEL_CONFIG_NON_PREDEFINED, /*_stridx*/ 0x00),\
+    TUD_AUDIO_DESC_CS_AS_INT(/*_termid*/ UAC2_ENTITY_SPK_INPUT_TERMINAL, /*_ctrl*/ AUDIO_CTRL_NONE, /*_formattype*/ AUDIO_FORMAT_TYPE_I, /*_formats*/ AUDIO_DATA_FORMAT_TYPE_I_PCM, /*_nchannelsphysical*/ SPEAK_CHANNEL_NUM, /*_channelcfg*/ UAC_SPK_CHANNEL_CONFIG, /*_stridx*/ 0x00),\
     /* Type I Format Type Descriptor(2.3.1.6 - Audio Formats) */\
     TUD_AUDIO_DESC_TYPE_I_FORMAT(CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_RX, CFG_TUD_AUDIO_FUNC_1_FORMAT_1_RESOLUTION_RX),\
     /* Standard AS Isochronous Audio Data Endpoint Descriptor(4.10.1.1) */\
@@ -197,7 +209,7 @@ enum {
     /* Class-Specific AS Isochronous Audio Data Endpoint Descriptor(4.10.1.2) */\
     TUD_AUDIO_DESC_CS_AS_ISO_EP(/*_attr*/ AUDIO_CS_AS_ISO_DATA_EP_ATT_NON_MAX_PACKETS_OK, /*_ctrl*/ AUDIO_CTRL_NONE, /*_lockdelayunit*/ AUDIO_CS_AS_ISO_DATA_EP_LOCK_DELAY_UNIT_MILLISEC, /*_lockdelay*/ 0x0001),\
     /* Standard AS Isochronous Audio Data Endpoint Descriptor(4.10.1.1) */\
-    TUD_AUDIO_DESC_STD_AS_ISO_FB_EP(/*_ep*/ _epfb, /*_epsize*/ 4, /*_interval*/1),\
+    TUD_AUDIO_DESC_STD_AS_ISO_FB_EP(/*_ep*/ _epfb, /*_epsize*/ UAC_FB_EP_SIZE, /*_interval*/1),\
     /* Standard AS Interface Descriptor(4.9.1) */\
     /* Interface 2, Alternate 0 - default alternate setting with 0 bandwidth */\
     TUD_AUDIO_DESC_STD_AS_INT(/*_itfnum*/ _itfnum + 2, /*_altset*/ 0x00, /*_nEPs*/ 0x00, /*_stridx*/ _stridx + 2),\
@@ -264,7 +276,7 @@ enum {
     /* Clock Source Descriptor(4.7.2.1) */\
     TUD_AUDIO_DESC_CLK_SRC(/*_clkid*/ UAC2_ENTITY_CLOCK, /*_attr*/ 3, /*_ctrl*/ 7, /*_assocTerm*/ 0x00,  /*_stridx*/ 0x00),\
     /* Input Terminal Descriptor(4.7.2.4) */\
-    TUD_AUDIO_DESC_INPUT_TERM(/*_termid*/ UAC2_ENTITY_SPK_INPUT_TERMINAL, /*_termtype*/ AUDIO_TERM_TYPE_USB_STREAMING, /*_assocTerm*/ 0x00, /*_clkid*/ UAC2_ENTITY_CLOCK, /*_nchannelslogical*/ SPEAK_CHANNEL_NUM, /*_channelcfg*/ AUDIO_CHANNEL_CONFIG_NON_PREDEFINED, /*_idxchannelnames*/ 0x00, /*_ctrl*/ (AUDIO_CTRL_R << AUDIO_IN_TERM_CTRL_CONNECTOR_POS), /*_stridx*/ 0x00),\
+    TUD_AUDIO_DESC_INPUT_TERM(/*_termid*/ UAC2_ENTITY_SPK_INPUT_TERMINAL, /*_termtype*/ AUDIO_TERM_TYPE_USB_STREAMING, /*_assocTerm*/ 0x00, /*_clkid*/ UAC2_ENTITY_CLOCK, /*_nchannelslogical*/ SPEAK_CHANNEL_NUM, /*_channelcfg*/ UAC_SPK_CHANNEL_CONFIG, /*_idxchannelnames*/ 0x00, /*_ctrl*/ (AUDIO_CTRL_R << AUDIO_IN_TERM_CTRL_CONNECTOR_POS), /*_stridx*/ 0x00),\
     /* Feature Unit Descriptor(4.7.2.8) */\
     TUD_AUDIO_DESC_FEATURE_UNIT_N_CHANNEL(/*_length*/ TUD_AUDIO_DESC_SPK_FEATURE_UNIT_N_CHANNEL_LEN, /*_unitid*/ UAC2_ENTITY_SPK_FEATURE_UNIT, /*_srcid*/ UAC2_ENTITY_SPK_INPUT_TERMINAL, /*_stridx*/ 0x00, INPUT_CTRL),\
     /* Output Terminal Descriptor(4.7.2.5) */\
@@ -275,7 +287,7 @@ enum {
     /* Interface 1, Alternate 1 - alternate interface for data streaming */\
     TUD_AUDIO_DESC_STD_AS_INT(/*_itfnum*/ _itfnum + 1, /*_altset*/ 0x01, /*_nEPs*/ 0x02, /*_stridx*/ _stridx + 1),\
     /* Class-Specific AS Interface Descriptor(4.9.2) */\
-    TUD_AUDIO_DESC_CS_AS_INT(/*_termid*/ UAC2_ENTITY_SPK_INPUT_TERMINAL, /*_ctrl*/ AUDIO_CTRL_NONE, /*_formattype*/ AUDIO_FORMAT_TYPE_I, /*_formats*/ AUDIO_DATA_FORMAT_TYPE_I_PCM, /*_nchannelsphysical*/ SPEAK_CHANNEL_NUM, /*_channelcfg*/ AUDIO_CHANNEL_CONFIG_NON_PREDEFINED, /*_stridx*/ 0x00),\
+    TUD_AUDIO_DESC_CS_AS_INT(/*_termid*/ UAC2_ENTITY_SPK_INPUT_TERMINAL, /*_ctrl*/ AUDIO_CTRL_NONE, /*_formattype*/ AUDIO_FORMAT_TYPE_I, /*_formats*/ AUDIO_DATA_FORMAT_TYPE_I_PCM, /*_nchannelsphysical*/ SPEAK_CHANNEL_NUM, /*_channelcfg*/ UAC_SPK_CHANNEL_CONFIG, /*_stridx*/ 0x00),\
     /* Type I Format Type Descriptor(2.3.1.6 - Audio Formats) */\
     TUD_AUDIO_DESC_TYPE_I_FORMAT(CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_RX, CFG_TUD_AUDIO_FUNC_1_FORMAT_1_RESOLUTION_RX),\
     /* Standard AS Isochronous Audio Data Endpoint Descriptor(4.10.1.1) */\
@@ -283,7 +295,7 @@ enum {
     /* Class-Specific AS Isochronous Audio Data Endpoint Descriptor(4.10.1.2) */\
     TUD_AUDIO_DESC_CS_AS_ISO_EP(/*_attr*/ AUDIO_CS_AS_ISO_DATA_EP_ATT_NON_MAX_PACKETS_OK, /*_ctrl*/ AUDIO_CTRL_NONE, /*_lockdelayunit*/ AUDIO_CS_AS_ISO_DATA_EP_LOCK_DELAY_UNIT_MILLISEC, /*_lockdelay*/ 0x0001),\
     /* Standard AS Isochronous Audio Data Endpoint Descriptor(4.10.1.1) */\
-    TUD_AUDIO_DESC_STD_AS_ISO_FB_EP(/*_ep*/ _epfb, /*_epsize*/ 4, /*_interval*/1)
+    TUD_AUDIO_DESC_STD_AS_ISO_FB_EP(/*_ep*/ _epfb, /*_epsize*/ UAC_FB_EP_SIZE, /*_interval*/1)
 #endif
 
 #ifdef __cplusplus

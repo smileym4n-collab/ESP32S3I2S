@@ -94,6 +94,20 @@ menu "USB to I2S DAC"
             default firmware assumption. With this enabled, 44.1/88.2 kHz
             drives the select GPIO HIGH and 48/96 kHz drives it LOW.
 
+    config AUDIO_I2S_BCLK_INVERT
+        bool "Invert I2S BCLK output"
+        default n
+        help
+            Try this if the DAC samples serial data on the opposite BCLK edge
+            from the ESP32-S3 default.
+
+    config AUDIO_I2S_WS_INVERT
+        bool "Invert I2S LRCK/WS output"
+        default n
+        help
+            Try this if the DAC's left/right channel polarity is opposite.
+            This normally swaps channels rather than causing silence.
+
     config AUDIO_I2S_DMA_DESC_NUM
         int "I2S DMA descriptor count"
         default 8

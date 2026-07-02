@@ -569,6 +569,15 @@ esp_err_t uac_device_init(uac_device_config_t *config)
     s_uac_device->mic_buf_write = s_uac_device->mic_buf1;
     s_uac_device->mic_buf_read = s_uac_device->mic_buf2;
 
+    ESP_LOGI(TAG,
+             "UAC speaker config: channels=%d bytes_per_sample=%d frame_bytes=%d ep_out_size=%d fb_ep_size=%d interval_ms=%d",
+             CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_RX,
+             CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_RX,
+             CFG_TUD_AUDIO_FUNC_1_FORMAT_1_FRAME_SZ_RX,
+             CFG_TUD_AUDIO_FUNC_1_FORMAT_1_EP_SZ_OUT,
+             UAC_FB_EP_SIZE,
+             SPK_INTERVAL_MS);
+
 #if CONFIG_USB_DEVICE_UAC_AS_PART
     s_uac_device->spk_itf_num = config->spk_itf_num;
     s_uac_device->mic_itf_num = config->mic_itf_num;
