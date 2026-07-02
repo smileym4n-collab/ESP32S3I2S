@@ -29,21 +29,25 @@ extern "C" {
 
 #define CFG_TUD_AUDIO_FUNC_1_DESC_LEN                                TUD_AUDIO_DEVICE_DESC_LEN
 
-// How many formats are used, need to adjust USB descriptor if changed
-#define CFG_TUD_AUDIO_FUNC_1_N_FORMATS                               1
+// Speaker OUT advertises both 16-bit PCM and 24-bit PCM in 32-bit slots.
+#define CFG_TUD_AUDIO_FUNC_1_N_FORMATS                               2
 
 #define CFG_TUD_AUDIO_FUNC_1_MAX_SAMPLE_RATE                         MAX_SAMPLE_RATE
 #define CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_TX                           MIC_CHANNEL_NUM
 #define CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_RX                           SPEAK_CHANNEL_NUM
 
-// Bit resolution and slot size selected via Kconfig (UAC_BIT_RESOLUTION).
-// 16-bit -> 2 bytes/sample, 24-bit and 32-bit -> 4 bytes/sample (24-in-32 / 32-in-32).
+// TX is unused by this speaker-only firmware but remains Kconfig-driven for
+// the generic component path.
 #define CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_TX          CONFIG_UAC_BYTES_PER_SAMPLE
 #define CFG_TUD_AUDIO_FUNC_1_FORMAT_1_RESOLUTION_TX                  CONFIG_UAC_BIT_RESOLUTION
-#define CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_RX          CONFIG_UAC_BYTES_PER_SAMPLE
-#define CFG_TUD_AUDIO_FUNC_1_FORMAT_1_RESOLUTION_RX                  CONFIG_UAC_BIT_RESOLUTION
+#define CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_RX          2
+#define CFG_TUD_AUDIO_FUNC_1_FORMAT_1_RESOLUTION_RX                  16
 #define CFG_TUD_AUDIO_FUNC_1_FORMAT_1_FRAME_SZ_TX                    (CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_TX * CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_TX)
 #define CFG_TUD_AUDIO_FUNC_1_FORMAT_1_FRAME_SZ_RX                    (CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_RX * CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_RX)
+
+#define CFG_TUD_AUDIO_FUNC_1_FORMAT_2_N_BYTES_PER_SAMPLE_RX          4
+#define CFG_TUD_AUDIO_FUNC_1_FORMAT_2_RESOLUTION_RX                  24
+#define CFG_TUD_AUDIO_FUNC_1_FORMAT_2_FRAME_SZ_RX                    (CFG_TUD_AUDIO_FUNC_1_FORMAT_2_N_BYTES_PER_SAMPLE_RX * CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_RX)
 
 // EP and buffer size - for isochronous EP´s, the buffer and EP size are equal (different sizes would not make sense)
 #define CFG_TUD_AUDIO_ENABLE_EP_IN                1
@@ -59,9 +63,10 @@ extern "C" {
 
 // SPK OUT EP (host-to-device = RX): keep EP size aligned to one complete audio frame.
 #define CFG_TUD_AUDIO_FUNC_1_FORMAT_1_EP_SZ_OUT   ((CFG_TUD_AUDIO_FUNC_1_MAX_SAMPLE_RATE / 1000 * CFG_TUD_AUDIO_FUNC_1_FORMAT_1_FRAME_SZ_RX) + CFG_TUD_AUDIO_FUNC_1_FORMAT_1_FRAME_SZ_RX)
+#define CFG_TUD_AUDIO_FUNC_1_FORMAT_2_EP_SZ_OUT   ((CFG_TUD_AUDIO_FUNC_1_MAX_SAMPLE_RATE / 1000 * CFG_TUD_AUDIO_FUNC_1_FORMAT_2_FRAME_SZ_RX) + CFG_TUD_AUDIO_FUNC_1_FORMAT_2_FRAME_SZ_RX)
 
-#define CFG_TUD_AUDIO_FUNC_1_EP_OUT_SW_BUF_SZ     CFG_TUD_AUDIO_FUNC_1_FORMAT_1_EP_SZ_OUT * (SPK_INTERVAL_MS + 1)
-#define CFG_TUD_AUDIO_FUNC_1_EP_OUT_SZ_MAX        CFG_TUD_AUDIO_FUNC_1_FORMAT_1_EP_SZ_OUT // Maximum EP OUT size for all AS alternate settings used
+#define CFG_TUD_AUDIO_FUNC_1_EP_OUT_SW_BUF_SZ     CFG_TUD_AUDIO_FUNC_1_FORMAT_2_EP_SZ_OUT * (SPK_INTERVAL_MS + 1)
+#define CFG_TUD_AUDIO_FUNC_1_EP_OUT_SZ_MAX        CFG_TUD_AUDIO_FUNC_1_FORMAT_2_EP_SZ_OUT // Maximum EP OUT size for all AS alternate settings used
 
 // Number of Standard AS Interface Descriptors (4.9.1) defined per audio function - this is required to be able to remember the current alternate settings of these interfaces - We restrict us here to have a constant number for all audio functions (which means this has to be the maximum number of AS interfaces an audio function has and a second audio function with less AS interfaces just wastes a few bytes)
 #define CFG_TUD_AUDIO_FUNC_1_N_AS_INT             1

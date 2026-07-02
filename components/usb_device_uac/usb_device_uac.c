@@ -43,8 +43,15 @@ enum {
     VOLUME_CTRL_SILENCE = 0x8000,
 };
 
-// Resolution per format
-const uint8_t spk_resolutions_per_format[CFG_TUD_AUDIO_FUNC_1_N_FORMATS] = {CFG_TUD_AUDIO_FUNC_1_FORMAT_1_RESOLUTION_RX};
+// Speaker format arrays map active streaming alternate settings: alt 1 -> index 0, alt 2 -> index 1.
+const uint8_t spk_resolutions_per_format[CFG_TUD_AUDIO_FUNC_1_N_FORMATS] = {
+    CFG_TUD_AUDIO_FUNC_1_FORMAT_1_RESOLUTION_RX,
+    CFG_TUD_AUDIO_FUNC_1_FORMAT_2_RESOLUTION_RX,
+};
+const uint8_t spk_bytes_per_sample_per_format[CFG_TUD_AUDIO_FUNC_1_N_FORMATS] = {
+    CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_RX,
+    CFG_TUD_AUDIO_FUNC_1_FORMAT_2_N_BYTES_PER_SAMPLE_RX,
+};
 const uint8_t mic_resolutions_per_format[CFG_TUD_AUDIO_FUNC_1_N_FORMATS] = {CFG_TUD_AUDIO_FUNC_1_FORMAT_1_RESOLUTION_TX};
 
 typedef struct {
@@ -62,6 +69,7 @@ typedef struct {
     int spk_itf_num;
     int mic_itf_num;
     uint8_t spk_resolution;
+    uint8_t spk_bytes_per_sample;
     uint8_t mic_resolution;
     uint32_t current_sample_rate;                                // Current resolution, update on format change
     TaskHandle_t mic_task_handle;
@@ -385,13 +393,25 @@ bool tud_audio_set_itf_cb(uint8_t rhport, tusb_control_request_t const *p_reques
 
 #if SPEAK_CHANNEL_NUM
     if (s_uac_device->spk_itf_num == itf && alt != 0) {
+        uint8_t const format_index = alt - 1;
+        if (format_index >= CFG_TUD_AUDIO_FUNC_1_N_FORMATS) {
+            return false;
+        }
         s_uac_device->spk_data_size = 0;
-        s_uac_device->spk_resolution = spk_resolutions_per_format[alt - 1];
+        s_uac_device->spk_resolution = spk_resolutions_per_format[format_index];
+        s_uac_device->spk_bytes_per_sample = spk_bytes_per_sample_per_format[format_index];
         s_uac_device->spk_active = true;
         reset_audio_rate_state(s_uac_device->current_sample_rate);
+        if (s_uac_device->user_cfg.set_format_cb) {
+            s_uac_device->user_cfg.set_format_cb(
+                s_uac_device->spk_resolution,
+                s_uac_device->spk_bytes_per_sample,
+                s_uac_device->user_cfg.cb_ctx);
+        }
         xTaskNotifyGive(s_uac_device->spk_task_handle);
         TU_LOG1("Speaker interface %d-%d opened", itf, alt);
-        printf("Speaker interface %d-%d opened\n", itf, alt);
+        printf("Speaker interface %d-%d opened: %u-bit, %u bytes/sample\n",
+               itf, alt, s_uac_device->spk_resolution, s_uac_device->spk_bytes_per_sample);
     }
 #endif
 
@@ -442,7 +462,7 @@ bool tud_audio_rx_done_isr(uint8_t rhport, uint16_t n_bytes_received, uint8_t fu
             s_uac_device->current_sample_rate,
             SPK_INTERVAL_MS / 2,
             &s_uac_device->spk_frame_remainder,
-            SPEAK_CHANNEL_NUM * CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_RX);
+            SPEAK_CHANNEL_NUM * s_uac_device->spk_bytes_per_sample);
         if (bytes_remained < bytes_require) {
             return true;
         }
@@ -452,7 +472,7 @@ bool tud_audio_rx_done_isr(uint8_t rhport, uint16_t n_bytes_received, uint8_t fu
             s_uac_device->current_sample_rate,
             1,
             &s_uac_device->spk_frame_remainder,
-            SPEAK_CHANNEL_NUM * CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_RX);
+            SPEAK_CHANNEL_NUM * s_uac_device->spk_bytes_per_sample);
     }
 
     s_uac_device->spk_data_size = tud_audio_n_read(func_id, s_uac_device->spk_buf, bytes_require);
@@ -564,17 +584,20 @@ esp_err_t uac_device_init(uac_device_config_t *config)
     s_uac_device->user_cfg.set_mute_cb = config->set_mute_cb;
     s_uac_device->user_cfg.set_volume_cb = config->set_volume_cb;
     s_uac_device->user_cfg.set_sample_rate_cb = config->set_sample_rate_cb;
+    s_uac_device->user_cfg.set_format_cb = config->set_format_cb;
     s_uac_device->current_sample_rate = DEFAULT_SAMPLE_RATE;
+    s_uac_device->spk_resolution = CFG_TUD_AUDIO_FUNC_1_FORMAT_1_RESOLUTION_RX;
+    s_uac_device->spk_bytes_per_sample = CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_RX;
     reset_audio_rate_state(s_uac_device->current_sample_rate);
     s_uac_device->mic_buf_write = s_uac_device->mic_buf1;
     s_uac_device->mic_buf_read = s_uac_device->mic_buf2;
 
     ESP_LOGI(TAG,
-             "UAC speaker config: channels=%d bytes_per_sample=%d frame_bytes=%d ep_out_size=%d fb_ep_size=%d interval_ms=%d",
+             "UAC speaker config: channels=%d formats=16-bit/2-byte and 24-bit/4-byte frame_bytes=%d/%d ep_out_size_max=%d fb_ep_size=%d interval_ms=%d",
              CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_RX,
-             CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_RX,
              CFG_TUD_AUDIO_FUNC_1_FORMAT_1_FRAME_SZ_RX,
-             CFG_TUD_AUDIO_FUNC_1_FORMAT_1_EP_SZ_OUT,
+             CFG_TUD_AUDIO_FUNC_1_FORMAT_2_FRAME_SZ_RX,
+             CFG_TUD_AUDIO_FUNC_1_EP_OUT_SZ_MAX,
              UAC_FB_EP_SIZE,
              SPK_INTERVAL_MS);
 

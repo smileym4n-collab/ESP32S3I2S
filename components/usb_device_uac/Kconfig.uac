@@ -21,11 +21,12 @@ menu "USB Device UAC"
         default 48000
 
     choice UAC_BIT_RESOLUTION
-        prompt "UAC bit resolution"
+        prompt "UAC fallback/microphone bit resolution"
         default UAC_BIT_RESOLUTION_16
         help
-            Bit resolution used for both speaker (RX) and microphone (TX) streams.
-            EP and software buffers scale automatically with the chosen width.
+            The speaker stream in this project advertises both 16-bit PCM
+            and 24-bit PCM in 32-bit slots. This option is retained for the
+            generic component path and unused microphone stream settings.
 
         config UAC_BIT_RESOLUTION_16
             bool "16-bit (in 16-bit slot)"

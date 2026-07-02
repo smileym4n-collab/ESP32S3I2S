@@ -27,27 +27,6 @@ menu "USB to I2S DAC"
         default 88200 if AUDIO_SAMPLE_RATE_88200
         default 96000 if AUDIO_SAMPLE_RATE_96000
 
-    choice AUDIO_BIT_DEPTH_CHOICE
-        prompt "USB PCM bit depth"
-        default AUDIO_BIT_DEPTH_16
-        help
-            16-bit is the reliable default with the managed Espressif
-            usb_device_uac component. 24-bit is left available for custom
-            descriptor work or component versions that expose 24-bit
-            speaker descriptors.
-
-        config AUDIO_BIT_DEPTH_16
-            bool "16-bit stereo PCM"
-
-        config AUDIO_BIT_DEPTH_24
-            bool "24-bit stereo PCM (descriptor support required)"
-    endchoice
-
-    config AUDIO_BITS_PER_SAMPLE
-        int
-        default 16 if AUDIO_BIT_DEPTH_16
-        default 24 if AUDIO_BIT_DEPTH_24
-
     config AUDIO_I2S_PORT
         int "I2S port"
         default 0

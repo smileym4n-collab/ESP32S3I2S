@@ -39,7 +39,7 @@ The firmware presents to the host as `Tom Watson Audio` and supports:
 - USB Audio Class speaker device through Espressif's TinyUSB-based
   `usb_device_uac` component
 - 44.1 kHz, 48 kHz, 88.2 kHz, and 96 kHz stereo, switchable by the OS
-- 16-bit PCM
+- 16-bit and 24-bit PCM, selectable by the OS from the same firmware
 - Philips I2S
 - 32-bit I2S slots, giving a conventional 64fs BCLK for external audio DACs
 - External MCLK input on D15 using ESP-IDF `I2S_CLK_SRC_EXTERNAL`
@@ -56,7 +56,8 @@ Oscillator selection:
 When macOS changes the selected sample rate, the firmware stops I2S,
 clears the audio buffer, selects the correct oscillator on D17, recreates
 the I2S channel at the new rate, and waits for prefill before restarting
-playback.
+playback. When the OS changes between 16-bit and 24-bit formats, the
+firmware clears the audio buffer and restarts I2S after the normal prefill.
 
 ## External MCLK Requirement
 
@@ -97,13 +98,13 @@ idf.py flash monitor
 ```
 
 Serial logs report USB mount/unmount from the UAC component, selected
-sample rate, oscillator family, D17 level, I2S pins, whether external
-MCLK input is in use, I2S start/stop, mute/volume requests, and software
-buffer underrun/overrun counts from the app.
+sample rate, selected 16/24-bit audio format, oscillator family, D17 level,
+I2S pins, whether external MCLK input is in use, I2S start/stop, mute/volume
+requests, and software buffer underrun/overrun counts from the app.
 
 ## 24-bit Note
 
-The code keeps the I2S side ready for 24-bit samples, but the shipped
-default is 16-bit stereo while we bring up the board. Move to 24-bit only
-after confirming the USB descriptors presented to the host advertise
-24-bit speaker PCM cleanly on your operating system.
+The USB speaker interface advertises two streaming formats: 16-bit stereo
+PCM and 24-bit stereo PCM in 32-bit slots. The I2S side remains 32-bit
+stereo Philips I2S for both modes, so BCLK stays at the conventional 64fs
+rate while the audio payload changes with the OS-selected format.

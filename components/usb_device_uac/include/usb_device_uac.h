@@ -19,6 +19,7 @@ typedef esp_err_t (*uac_input_cb_t)(uint8_t *buf, size_t len, size_t *bytes_read
 typedef void (*uac_set_mute_cb_t)(uint32_t mute, void *cb_ctx);
 typedef void (*uac_set_volume_cb_t)(uint32_t volume, void *cb_ctx);
 typedef void (*uac_set_sample_rate_cb_t)(uint32_t sample_rate, void *cb_ctx);
+typedef void (*uac_set_format_cb_t)(uint8_t bit_resolution, uint8_t bytes_per_sample, void *cb_ctx);
 
 /**
  * @brief USB UAC Device Config
@@ -31,6 +32,7 @@ typedef struct  {
     uac_set_mute_cb_t set_mute_cb;               /*!< callback function for set mute, if NULL, the set mute request will be ignored */
     uac_set_volume_cb_t set_volume_cb;           /*!< callback function for set volume, if NULL, the set volume request will be ignored */
     uac_set_sample_rate_cb_t set_sample_rate_cb; /*!< callback function for host-selected sample rate changes */
+    uac_set_format_cb_t set_format_cb;           /*!< callback function for host-selected speaker sample format changes */
     void *cb_ctx;                                /*!< callback context, for user specific usage */
 #if CONFIG_USB_DEVICE_UAC_AS_PART
     int spk_itf_num;                             /*!< If CONFIG_USB_DEVICE_UAC_AS_PART is enabled, you need to provide the speaker interface number */
