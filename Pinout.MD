@@ -1,126 +1,111 @@
 # ESP32-S3 USB Audio I²S Pinout
 
-This board is an ESP32-S3 USB Audio Class to I²S output board intended to drive an external DAC.
+This board is a self-powered ESP32-S3-WROOM-1U USB Audio Class to I²S
+bridge. The current assembly has an N8R8 module; the intended replacement is
+an N8 module without octal PSRAM.
 
-The board has two local audio oscillators:
+## GPIO Map
 
-* **22.5792 MHz** for the 44.1 kHz sample-rate family
-* **24.5760 MHz** for the 48 kHz sample-rate family
+| Function | GPIO | Direction | Notes |
+| --- | ---: | --- | --- |
+| I²S BCLK | 4 | Output | Bit clock to DAC |
+| I²S LRCK / WS | 5 | Output | Word-select clock to DAC |
+| I²S DATA | 6 | Output | Serial audio data to DAC |
+| FREQ / oscillator select | 7 | Output | LOW = 22.5792 MHz, HIGH = 24.5760 MHz |
+| I²C SDA | 8 | Reserved | Defined for future board control; not initialized |
+| I²C SCL | 9 | Reserved | Defined for future board control; not initialized |
+| ATTINY_UART_TX | 10 | Output | UART1 TX to ATtiny1616 RX, 9600 baud 8N1 |
+| VBUS_SENSE | 13 | Input | Active-high host VBUS indication through external divider |
+| MCLKESP / external SCK-MCLK | 15 | Input | Selected clock from 5PB1102 |
+| Native USB D- | 19 | USB | Fixed ESP32-S3 native USB pin |
+| Native USB D+ | 20 | USB | Fixed ESP32-S3 native USB pin |
+| MUTE | 35 | Output | Active-high mute/status |
+| F3 | 36 | Output | Sample-rate status MSB |
+| F2 | 37 | Output | Sample-rate status |
+| F1 | 38 | Output | Sample-rate status |
+| F0 | 39 | Output | Sample-rate status LSB |
 
-The oscillators feed a **74LVC1G157GW multiplexer**.
-The selected oscillator then feeds a **5PB1102PGGK clock buffer**, which fans out the selected SCK/MCLK to:
+UART0 RX/TX are intentionally not assigned to ATtiny status and remain
+available for the normal programming and debug console.
 
-* the ESP32-S3 external clock input
-* the external DAC SCK/MCLK header
+## N8R8 Audio-Test Profile
 
-## Pin Map
+Espressif specifies GPIO35, GPIO36, and GPIO37 as internally connected to
+octal PSRAM and unavailable for other uses on ESP32-S3R8 WROOM-1/1U modules.
+That includes ESP32-S3-WROOM-1U-N8R8 and conflicts with this PCB's requested
+MUTE, F3, and F2 assignments.
 
-| Function                      | ESP32-S3 Pin | Direction | Notes                                   |
-| ----------------------------- | -----------: | --------- | --------------------------------------- |
-| I²S BCK                       |           D4 | Output    | Bit clock to DAC                        |
-| I²S LRCK / WS                 |           D5 | Output    | Left/right word clock to DAC            |
-| I²S DATA                      |           D6 | Output    | Serial audio data to DAC                |
-| SCK / MCLK input from 5PB1102 |          D15 | Input     | External master clock input to ESP32-S3 |
-| Oscillator select             |          D17 | Output    | Selects oscillator via 74LVC1G157GW     |
+The default `n8r8_audio_test` PlatformIO profile disables PSRAM initialization
+and does not configure any of GPIO35-GPIO39. It is intended only to validate
+USB enumeration, sample-rate switching, external MCLK, BCLK/LRCK/DATA,
+oscillator selection, VBUS sensing, and the ATtiny UART. MUTE and F0-F3 are
+logical/logged states only in this profile and do not drive the PCB.
 
-## Oscillator Select Logic
+The `esp32s3_n8` profile enables GPIO35-GPIO39 for the future non-PSRAM N8
+module. No application-code rewrite is required when the module changes;
+selecting the N8 build environment enables the full status interface.
 
-The oscillator select signal is connected to the select input of the 74LVC1G157GW.
+## Clock Selection and Supported Rates
 
-| D17 State | Selected Oscillator | Sample-Rate Family |
-| --------- | ------------------: | ------------------ |
-| LOW       |         22.5792 MHz | 44.1 / 88.2 kHz    |
-| HIGH      |         24.5760 MHz | 48 / 96 kHz        |
+The selected 22.5792 MHz or 24.5760 MHz oscillator is distributed by the
+5PB1102 to both the DAC SCK/MCLK header and ESP32-S3 GPIO15.
 
-Firmware must set `D17` before configuring or starting the I²S clocking for a new sample rate.
+| Sample Rate | GPIO7 | Oscillator | MCLK Ratio | F3 | F2 | F1 | F0 |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 44.1 kHz | LOW | 22.5792 MHz | 512 fs | 0 | 0 | 0 | 1 |
+| 48 kHz | HIGH | 24.5760 MHz | 512 fs | 0 | 0 | 1 | 0 |
+| 88.2 kHz | LOW | 22.5792 MHz | 256 fs | 0 | 0 | 1 | 1 |
+| 96 kHz | HIGH | 24.5760 MHz | 256 fs | 0 | 1 | 0 | 0 |
 
-## Supported Sample Rates
+176.4 kHz and 192 kHz are not advertised or supported. During inactive,
+disconnected, muted/reconfiguring, or unsupported states, F3..F0 are all
+LOW.
 
-Initial firmware target sample rates:
+Firmware asserts MUTE before selecting GPIO7 and reconfiguring I²S. It waits
+500 ms for the clock path to settle, waits for valid USB audio prefill, then
+drives MUTE LOW only after I²S is running. MUTE is HIGH on USB/VBUS
+disconnect, stream stop, unsupported format/rate, and I²S errors.
 
-| Sample Rate | Oscillator Select | MCLK Frequency | MCLK Ratio |
-| ----------: | ----------------- | -------------: | ---------: |
-|    44.1 kHz | D17 LOW           |    22.5792 MHz |     512 fs |
-|      48 kHz | D17 HIGH          |    24.5760 MHz |     512 fs |
-|    88.2 kHz | D17 LOW           |    22.5792 MHz |     256 fs |
-|      96 kHz | D17 HIGH          |    24.5760 MHz |     256 fs |
+## External MCLK
 
-Do not target 176.4 kHz or 192 kHz initially. These may be considered later as experimental modes only.
+The detected ESP-IDF standard-I²S driver genuinely supports external clock
+input on ESP32-S3. Firmware configures:
 
-## Clock Architecture
-
-The ESP32-S3 should use the selected external SCK/MCLK from the 5PB1102PGGK as its master clock reference where supported.
-
-Clock path:
-
-```text
-22.5792 MHz oscillator ─┐
-                        ├─> 74LVC1G157GW mux ─> 5PB1102PGGK buffer ─┬─> ESP32-S3 SCK/MCLK input on D15
-24.5760 MHz oscillator ─┘                                            └─> DAC SCK/MCLK header
+```c
+clk_src = I2S_CLK_SRC_EXTERNAL;
+ext_clk_freq_hz = 22579200; /* or 24576000 */
+gpio_cfg.mclk = GPIO_NUM_15;
 ```
 
-The ESP32-S3 outputs:
+With that source selected, the driver treats the MCLK pin as an input and
+derives BCLK and LRCK/WS from the external clock. There is no internal-clock
+fallback. If the selected target/ESP-IDF build does not expose this path, or
+I²S initialization fails, firmware logs the limitation, keeps MUTE HIGH,
+leaves F3..F0 LOW, and does not start I²S.
+
+## VBUS Sense
+
+GPIO13 reads USB VBUS through the PCB resistor divider; it is not 5 V
+tolerant and must not be connected directly to VBUS. Firmware checks it at
+boot and polls it during runtime. Without VBUS, audio stays stopped and
+muted. When VBUS appears, USB mount plus a valid stream can enable audio.
+When it disappears, audio is stopped immediately and status returns to the
+safe inactive state. VBUS is treated only as host-presence detection, not as
+the board power source.
+
+## ATtiny1616 Status UART
+
+GPIO10 uses UART1 TX at 9600 baud, 8 data bits, no parity, and 1 stop bit.
+Each message is ASCII terminated by CRLF. Examples:
 
 ```text
-D4 = I²S BCK
-D5 = I²S LRCK / WS
-D6 = I²S DATA
+BOOT:ESP32S3_USB_I2S
+SR:44100,BITS:16,MUTE:0,USB:1
+SR:48000,BITS:24,MUTE:0,USB:1
+USB:0,MUTE:1
+ERR:UNSUPPORTED_RATE
+ERR:UNSUPPORTED_FORMAT
 ```
 
-The DAC receives:
-
-```text
-SCK / MCLK from 5PB1102PGGK
-BCK from ESP32-S3 D4
-LRCK / WS from ESP32-S3 D5
-DATA from ESP32-S3 D6
-```
-
-## Firmware Requirements
-
-The firmware should support USB Audio Class output over I²S.
-
-Initial implementation order:
-
-1. 48 kHz
-2. 44.1 kHz
-3. 96 kHz
-4. 88.2 kHz
-
-For each requested USB sample rate:
-
-* Select the correct oscillator using D17.
-* Configure the I²S peripheral for the requested sample rate.
-* Output BCK, LRCK and DATA on the configured pins.
-* Use the external SCK/MCLK input from D15 where possible.
-* Use ESP-IDF `I2S_CLK_SRC_EXTERNAL` with D15 as the MCLK input where the ESP32-S3 I²S driver exposes that mode.
-* Do not silently fall back to internally generated I²S clocks for this PCB design.
-
-## Sample-Rate Selection Rules
-
-```text
-44.1 kHz  -> D17 LOW
-88.2 kHz  -> D17 LOW
-
-48 kHz    -> D17 HIGH
-96 kHz    -> D17 HIGH
-```
-
-Unsupported sample rates should either be rejected by the USB audio descriptor or safely ignored.
-
-## Known Firmware Limitation
-
-This PCB assumes the ESP32-S3 I²S peripheral can derive BCK and LRCK / WS from the selected external SCK/MCLK on D15.
-
-ESP-IDF documents external I²S clock input via `I2S_CLK_SRC_EXTERNAL` and `ext_clk_freq_hz`; when that mode is selected, the MCLK pin is used as an input instead of an output.
-
-If the selected ESP-IDF version or target does not support external MCLK input for standard I²S TX, the firmware must fail safely with clear logging. It must not use internally generated clocks as a hidden fallback, because the DAC SCK/MCLK would still come from the onboard oscillator path and the ESP32-S3 BCK/LRCK timing might not be synchronous with it.
-
-## Notes
-
-* The external DAC requires a valid SCK/MCLK.
-* BCK, LRCK and DATA are generated by the ESP32-S3.
-* SCK/MCLK is generated by the selected oscillator and distributed by the 5PB1102PGGK.
-* Keep the clock family matched to the requested sample rate.
-* Do not mix 44.1 kHz-family rates with the 24.5760 MHz oscillator.
-* Do not mix 48 kHz-family rates with the 22.5792 MHz oscillator.
+State messages are sent on boot and when USB, sample format/rate, or MUTE
+state changes.

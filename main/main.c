@@ -11,8 +11,8 @@
  *
  * I2S side:
  *   The custom board selects either a 22.5792 MHz or 24.5760 MHz oscillator
- *   with GPIO D17. The selected clock is buffered and fed to the ESP32-S3 on
- *   GPIO D15 as an external MCLK input, and to the external DAC MCLK header.
+ *   with GPIO7. The selected clock is buffered and fed to the ESP32-S3 on
+ *   GPIO15 as an external MCLK input, and to the external DAC MCLK header.
  *   The ESP32-S3 outputs BCLK, LRCK/WS, and DATA in standard Philips format.
  *   The wire format is always 32-bit stereo I2S slots so the DAC sees the
  *   conventional 64fs bit clock. 16-bit and 24-bit USB PCM are aligned into
@@ -28,11 +28,13 @@
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "driver/gpio.h"
 #include "driver/i2s_std.h"
+#include "driver/uart.h"
 #include "esp_check.h"
 #include "esp_err.h"
 #include "esp_log.h"
@@ -58,6 +60,23 @@
 #define AUDIO_USB_CHUNK_BYTES       (AUDIO_I2S_CHUNK_FRAMES * AUDIO_USB_MAX_BYTES_PER_FRAME)
 #define AUDIO_I2S_CHUNK_BYTES       (AUDIO_I2S_CHUNK_FRAMES * AUDIO_I2S_BYTES_PER_FRAME)
 #define AUDIO_STATS_INTERVAL_MS     5000
+#define AUDIO_SETTLING_DELAY_MS     500
+#define ATTINY_UART_PORT            UART_NUM_1
+#define ATTINY_UART_BAUD            9600
+
+#define PIN_I2C_SDA                 CONFIG_BOARD_I2C_SDA_GPIO
+#define PIN_I2C_SCL                 CONFIG_BOARD_I2C_SCL_GPIO
+#define PIN_ATTINY_UART_TX          CONFIG_BOARD_ATTINY_UART_TX_GPIO
+#define PIN_VBUS_SENSE              CONFIG_BOARD_VBUS_SENSE_GPIO
+#define PIN_MUTE                    CONFIG_BOARD_MUTE_GPIO
+#define PIN_RATE_F3                 CONFIG_BOARD_RATE_F3_GPIO
+#define PIN_RATE_F2                 CONFIG_BOARD_RATE_F2_GPIO
+#define PIN_RATE_F1                 CONFIG_BOARD_RATE_F1_GPIO
+#define PIN_RATE_F0                 CONFIG_BOARD_RATE_F0_GPIO
+
+#ifndef BOARD_STATUS_OUTPUTS_ENABLE
+#define BOARD_STATUS_OUTPUTS_ENABLE 1
+#endif
 
 #ifndef AUDIO_PIN_BCLK
 #define AUDIO_PIN_BCLK              CONFIG_AUDIO_I2S_BCLK_GPIO
@@ -119,13 +138,34 @@
 #define CONFIG_AUDIO_I2S_WS_INVERT 0
 #endif
 
+#if BOARD_STATUS_OUTPUTS_ENABLE && CONFIG_SPIRAM_MODE_OCT && \
+    (CONFIG_BOARD_MUTE_GPIO >= 33 && CONFIG_BOARD_MUTE_GPIO <= 37 || \
+     CONFIG_BOARD_RATE_F3_GPIO >= 33 && CONFIG_BOARD_RATE_F3_GPIO <= 37 || \
+     CONFIG_BOARD_RATE_F2_GPIO >= 33 && CONFIG_BOARD_RATE_F2_GPIO <= 37 || \
+     CONFIG_BOARD_RATE_F1_GPIO >= 33 && CONFIG_BOARD_RATE_F1_GPIO <= 37 || \
+     CONFIG_BOARD_RATE_F0_GPIO >= 33 && CONFIG_BOARD_RATE_F0_GPIO <= 37)
+#define BOARD_OCTAL_PSRAM_PIN_CONFLICT 1
+#pragma message("WARNING: GPIO33-37 conflict with octal PSRAM; R8 modules cannot use the requested MUTE/F pinout")
+#else
+#define BOARD_OCTAL_PSRAM_PIN_CONFLICT 0
+#endif
+
+#if !BOARD_STATUS_OUTPUTS_ENABLE
+#pragma message("N8R8 AUDIO TEST: GPIO35-39 MUTE/F outputs are disabled and will not be configured")
+#endif
+
 static const char *TAG = "usb_i2s_dac";
 
 static i2s_chan_handle_t s_i2s_tx;
 static StreamBufferHandle_t s_audio_stream;
 static SemaphoreHandle_t s_i2s_lock;
 static volatile bool s_i2s_running;
-static volatile bool s_muted;
+static volatile bool s_usb_muted;
+static volatile bool s_hw_muted = true;
+static volatile bool s_usb_connected;
+static volatile bool s_stream_active;
+static volatile bool s_vbus_present;
+static volatile int64_t s_settle_until_us;
 static volatile uint32_t s_volume = 100;
 static volatile uint32_t s_underruns;
 static volatile uint32_t s_overruns;
@@ -151,6 +191,160 @@ typedef struct {
     bool osc_select_high;
     const char *family;
 } audio_clock_config_t;
+
+static bool audio_sample_rate_supported(uint32_t sample_rate);
+
+static void status_uart_send(const char *message)
+{
+    if (message == NULL) {
+        return;
+    }
+    uart_write_bytes(ATTINY_UART_PORT, message, strlen(message));
+    uart_write_bytes(ATTINY_UART_PORT, "\r\n", 2);
+    ESP_LOGI(TAG, "ATtiny UART TX: %s", message);
+}
+
+static void status_uart_send_state(void)
+{
+    char line[80];
+    if (!s_usb_connected || !s_vbus_present) {
+        snprintf(line, sizeof(line), "USB:0,MUTE:1");
+    } else {
+        snprintf(line,
+                 sizeof(line),
+                 "SR:%" PRIu32 ",BITS:%" PRIu32 ",MUTE:%d,USB:1",
+                 s_current_sample_rate,
+                 s_current_bits_per_sample,
+                 s_hw_muted ? 1 : 0);
+    }
+    status_uart_send(line);
+}
+
+static void audio_set_rate_outputs(bool active)
+{
+    uint8_t code = 0;
+    if (active) {
+        switch (s_current_sample_rate) {
+        case 44100: code = 0x1; break;
+        case 48000: code = 0x2; break;
+        case 88200: code = 0x3; break;
+        case 96000: code = 0x4; break;
+        default: active = false; break;
+        }
+    }
+
+#if BOARD_STATUS_OUTPUTS_ENABLE
+    gpio_set_level(PIN_RATE_F3, (code >> 3) & 1);
+    gpio_set_level(PIN_RATE_F2, (code >> 2) & 1);
+    gpio_set_level(PIN_RATE_F1, (code >> 1) & 1);
+    gpio_set_level(PIN_RATE_F0, code & 1);
+#endif
+    ESP_LOGI(TAG,
+             "Sample-rate status: rate=%" PRIu32 " F3F2F1F0=%d%d%d%d (%s, GPIO outputs %s)",
+             s_current_sample_rate,
+             (code >> 3) & 1,
+             (code >> 2) & 1,
+             (code >> 1) & 1,
+             code & 1,
+             active ? "active" : "inactive",
+             BOARD_STATUS_OUTPUTS_ENABLE ? "enabled" : "disabled");
+}
+
+static void audio_set_hw_mute(bool muted, const char *reason)
+{
+#if BOARD_STATUS_OUTPUTS_ENABLE
+    gpio_set_level(PIN_MUTE, muted ? 1 : 0);
+#endif
+    audio_set_rate_outputs(!muted);
+    if (s_hw_muted != muted) {
+        s_hw_muted = muted;
+        ESP_LOGI(TAG,
+                 "MUTE %s=%s (%s)",
+                 BOARD_STATUS_OUTPUTS_ENABLE ? "GPIO35" : "logical state; GPIO disabled",
+                 muted ? "HIGH" : "LOW",
+                 reason);
+        status_uart_send_state();
+    }
+}
+
+static bool audio_can_run(void)
+{
+    return s_vbus_present &&
+           s_usb_connected &&
+           s_stream_active &&
+           s_i2s_available &&
+           audio_sample_rate_supported(s_current_sample_rate);
+}
+
+static void board_status_io_init(void)
+{
+#if BOARD_OCTAL_PSRAM_PIN_CONFLICT
+    ESP_LOGE(TAG,
+             "BOARD/MODULE CONFLICT: the requested MUTE/F pins include GPIO35-37, "
+             "which Espressif reserves for octal PSRAM on R8 modules. "
+             "Use a non-octal WROOM-1U variant or revise the PCB pinout.");
+#endif
+
+#if BOARD_STATUS_OUTPUTS_ENABLE
+    gpio_config_t output_cfg = {
+        .pin_bit_mask = (1ULL << PIN_MUTE) |
+                        (1ULL << PIN_RATE_F3) |
+                        (1ULL << PIN_RATE_F2) |
+                        (1ULL << PIN_RATE_F1) |
+                        (1ULL << PIN_RATE_F0),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    ESP_ERROR_CHECK(gpio_config(&output_cfg));
+    gpio_set_level(PIN_MUTE, 1);
+    audio_set_rate_outputs(false);
+#else
+    ESP_LOGW(TAG,
+             "N8R8 audio-test build: MUTE and F0-F3 GPIO outputs are disabled; "
+             "GPIO35-39 will not be configured");
+#endif
+
+    gpio_config_t vbus_cfg = {
+        .pin_bit_mask = 1ULL << PIN_VBUS_SENSE,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_ENABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    ESP_ERROR_CHECK(gpio_config(&vbus_cfg));
+    s_vbus_present = gpio_get_level(PIN_VBUS_SENSE) != 0;
+    ESP_LOGI(TAG,
+             "VBUS sense GPIO%d: %s (external resistor divider input)",
+             PIN_VBUS_SENSE,
+             s_vbus_present ? "present" : "missing");
+    ESP_LOGI(TAG,
+             "I2C reserved (not initialized): SDA=GPIO%d SCL=GPIO%d",
+             PIN_I2C_SDA,
+             PIN_I2C_SCL);
+
+    uart_config_t uart_cfg = {
+        .baud_rate = ATTINY_UART_BAUD,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_DEFAULT,
+    };
+    ESP_ERROR_CHECK(uart_driver_install(ATTINY_UART_PORT, 256, 0, 0, NULL, 0));
+    ESP_ERROR_CHECK(uart_param_config(ATTINY_UART_PORT, &uart_cfg));
+    ESP_ERROR_CHECK(uart_set_pin(ATTINY_UART_PORT,
+                                 PIN_ATTINY_UART_TX,
+                                 UART_PIN_NO_CHANGE,
+                                 UART_PIN_NO_CHANGE,
+                                 UART_PIN_NO_CHANGE));
+    ESP_LOGI(TAG,
+             "ATtiny status UART: UART%d TX=GPIO%d, %d 8N1; UART0 remains reserved for console",
+             ATTINY_UART_PORT,
+             PIN_ATTINY_UART_TX,
+             ATTINY_UART_BAUD);
+}
 
 static bool audio_gpio_configured(void)
 {
@@ -227,7 +421,7 @@ static esp_err_t audio_select_oscillator(const audio_clock_config_t *clock_cfg)
 
     ESP_LOGI(TAG,
              "Clock select: USB rate=%" PRIu32 " Hz, oscillator family=%s, oscillator=%" PRIu32
-             " Hz, D%d=%s%s",
+             " Hz, GPIO%d=%s%s",
              clock_cfg->sample_rate,
              clock_cfg->family,
              clock_cfg->oscillator_hz,
@@ -267,7 +461,7 @@ static esp_err_t audio_i2s_init(uint32_t sample_rate)
 #if !AUDIO_EXTERNAL_MCLK_SUPPORTED
     ESP_LOGE(TAG,
              "External MCLK input is not available in this ESP-IDF/I2S target configuration. "
-             "This PCB expects the ESP32-S3 I2S peripheral to sync to the selected oscillator on D%d; "
+             "This PCB expects the ESP32-S3 I2S peripheral to sync to the selected oscillator on GPIO%d; "
              "internally generated clocks may not be valid for this design, so I2S will not start.",
              AUDIO_PIN_MCLK_IN);
     return ESP_ERR_NOT_SUPPORTED;
@@ -319,7 +513,7 @@ static esp_err_t audio_i2s_init(uint32_t sample_rate)
     }
 
     ESP_LOGI(TAG,
-             "I2S ready: rate=%d Hz, USB bits=%d, I2S bits=32, BCLK=D%d, WS=D%d, DATA=D%d, external MCLK input=D%d, "
+             "I2S ready: rate=%d Hz, USB bits=%d, I2S bits=32, BCLK=GPIO%d, WS=GPIO%d, DATA=GPIO%d, external MCLK input=GPIO%d, "
              "format=Philips I2S, slot_width=32, BCLK_inv=%s, WS_inv=%s, "
              "external_sck=%" PRIu32 " Hz (%" PRIu32 "fs), i2s_mclk_multiple=%d, external_mclk_used=yes",
              (int)sample_rate,
@@ -353,14 +547,36 @@ static void audio_i2s_deinit_locked(void)
     s_i2s_tx = NULL;
 }
 
+static void audio_stop(const char *reason)
+{
+    audio_set_hw_mute(true, reason);
+    if (s_i2s_lock == NULL) {
+        return;
+    }
+    xSemaphoreTake(s_i2s_lock, portMAX_DELAY);
+    if (s_i2s_tx != NULL && s_i2s_running) {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(i2s_channel_disable(s_i2s_tx));
+    }
+    s_i2s_running = false;
+    if (s_audio_stream != NULL) {
+        xStreamBufferReset(s_audio_stream);
+    }
+    xSemaphoreGive(s_i2s_lock);
+    ESP_LOGI(TAG, "Audio stopped: %s", reason);
+}
+
 static void audio_i2s_reconfigure(uint32_t sample_rate)
 {
+    audio_set_hw_mute(true, "sample-rate change");
     if (!audio_sample_rate_supported(sample_rate)) {
-        ESP_LOGW(TAG, "Ignoring unsupported sample rate: %" PRIu32 " Hz", sample_rate);
+        ESP_LOGE(TAG, "Unsupported sample rate: %" PRIu32 " Hz", sample_rate);
+        audio_set_rate_outputs(false);
+        status_uart_send("ERR:UNSUPPORTED_RATE");
         return;
     }
 
     s_current_sample_rate = sample_rate;
+    status_uart_send_state();
 
     if (!s_i2s_available) {
         ESP_LOGI(TAG, "Host selected %" PRIu32 " Hz; I2S remains disabled", sample_rate);
@@ -377,14 +593,18 @@ static void audio_i2s_reconfigure(uint32_t sample_rate)
         s_i2s_available = false;
         ESP_LOGE(TAG, "I2S reconfigure failed at %" PRIu32 " Hz: %s", sample_rate, esp_err_to_name(err));
     } else {
-        ESP_LOGI(TAG, "I2S reconfigured for %" PRIu32 " Hz; waiting for audio prefill", sample_rate);
+        s_settle_until_us = esp_timer_get_time() + (AUDIO_SETTLING_DELAY_MS * 1000LL);
+        ESP_LOGI(TAG,
+                 "I2S reconfigured for %" PRIu32 " Hz; MUTE remains high for %d ms settling",
+                 sample_rate,
+                 AUDIO_SETTLING_DELAY_MS);
     }
     xSemaphoreGive(s_i2s_lock);
 }
 
 static void audio_apply_mute(uint8_t *buf, size_t len)
 {
-    if (s_muted || s_volume == 0) {
+    if (s_usb_muted || s_volume == 0 || s_hw_muted) {
         memset(buf, 0, len);
     }
 }
@@ -494,19 +714,29 @@ static void audio_i2s_task(void *arg)
                 vTaskDelay(pdMS_TO_TICKS(10));
             }
 #else
-            if (xStreamBufferBytesAvailable(s_audio_stream) >= audio_prefill_bytes()) {
+            if (!audio_can_run() || esp_timer_get_time() < s_settle_until_us) {
+                vTaskDelay(pdMS_TO_TICKS(5));
+            } else if (xStreamBufferBytesAvailable(s_audio_stream) >= audio_prefill_bytes()) {
                 xSemaphoreTake(s_i2s_lock, portMAX_DELAY);
                 if (s_i2s_tx != NULL && i2s_channel_enable(s_i2s_tx) == ESP_OK) {
                     s_i2s_running = true;
                     ESP_LOGI(TAG, "I2S started at %" PRIu32 " Hz after %d ms prefill",
                              s_current_sample_rate,
                              CONFIG_AUDIO_PREFILL_MS);
+                    if (!s_usb_muted && s_volume > 0) {
+                        audio_set_hw_mute(false, "valid stream running");
+                    }
                 }
                 xSemaphoreGive(s_i2s_lock);
             } else {
                 vTaskDelay(pdMS_TO_TICKS(1));
             }
 #endif
+            continue;
+        }
+
+        if (!audio_can_run()) {
+            audio_stop("USB/VBUS/stream no longer active");
             continue;
         }
 
@@ -580,6 +810,7 @@ static void audio_i2s_task(void *arg)
             xStreamBufferReset(s_audio_stream);
             s_i2s_running = false;
             xSemaphoreGive(s_i2s_lock);
+            audio_set_hw_mute(true, "stream idle");
             ESP_LOGI(TAG, "I2S stopped after %" PRId64 " ms without USB audio", idle_ms);
         }
 #endif
@@ -655,7 +886,7 @@ static esp_err_t uac_device_output_cb(uint8_t *buf, size_t len, void *cb_ctx)
 {
     (void)cb_ctx;
 
-    if (!s_i2s_available) {
+    if (!audio_can_run() || esp_timer_get_time() < s_settle_until_us) {
         return ESP_OK;
     }
 
@@ -673,7 +904,12 @@ static esp_err_t uac_device_output_cb(uint8_t *buf, size_t len, void *cb_ctx)
 static void uac_device_set_mute_cb(uint32_t mute, void *cb_ctx)
 {
     (void)cb_ctx;
-    s_muted = mute != 0;
+    s_usb_muted = mute != 0;
+    if (s_usb_muted) {
+        audio_set_hw_mute(true, "USB host mute");
+    } else if (s_i2s_running && audio_can_run()) {
+        audio_set_hw_mute(false, "USB host unmute");
+    }
     ESP_LOGI(TAG, "USB mute set to %" PRIu32, mute);
 }
 
@@ -681,6 +917,11 @@ static void uac_device_set_volume_cb(uint32_t volume, void *cb_ctx)
 {
     (void)cb_ctx;
     s_volume = volume;
+    if (volume == 0) {
+        audio_set_hw_mute(true, "USB volume is zero");
+    } else if (!s_usb_muted && s_i2s_running && audio_can_run()) {
+        audio_set_hw_mute(false, "USB volume restored");
+    }
     ESP_LOGI(TAG, "USB volume set to %" PRIu32, volume);
 }
 
@@ -689,6 +930,31 @@ static void uac_device_set_sample_rate_cb(uint32_t sample_rate, void *cb_ctx)
     (void)cb_ctx;
     ESP_LOGI(TAG, "USB host selected sample rate: %" PRIu32 " Hz", sample_rate);
     audio_i2s_reconfigure(sample_rate);
+}
+
+static void uac_device_usb_state_cb(bool connected, void *cb_ctx)
+{
+    (void)cb_ctx;
+    s_usb_connected = connected;
+    ESP_LOGI(TAG, "USB host state: %s", connected ? "connected" : "disconnected");
+    if (!connected) {
+        s_stream_active = false;
+        audio_stop("USB disconnected/suspended");
+    }
+    status_uart_send_state();
+}
+
+static void uac_device_stream_state_cb(bool active, void *cb_ctx)
+{
+    (void)cb_ctx;
+    s_stream_active = active;
+    ESP_LOGI(TAG, "USB audio stream: %s", active ? "started" : "stopped");
+    if (!active) {
+        audio_stop("USB stream stopped");
+    } else {
+        audio_set_hw_mute(true, "USB stream starting");
+    }
+    status_uart_send_state();
 }
 
 static void uac_device_set_format_cb(uint8_t bit_resolution, uint8_t bytes_per_sample, void *cb_ctx)
@@ -701,9 +967,12 @@ static void uac_device_set_format_cb(uint8_t bit_resolution, uint8_t bytes_per_s
                  "Ignoring unsupported USB audio format: %u-bit, %u bytes/sample",
                  bit_resolution,
                  bytes_per_sample);
+        audio_set_hw_mute(true, "unsupported USB format");
+        status_uart_send("ERR:UNSUPPORTED_FORMAT");
         return;
     }
 
+    audio_set_hw_mute(true, "USB format change");
     xSemaphoreTake(s_i2s_lock, portMAX_DELAY);
     s_current_bits_per_sample = bit_resolution;
     s_current_usb_bytes_per_sample = bytes_per_sample;
@@ -724,13 +993,49 @@ static void uac_device_set_format_cb(uint8_t bit_resolution, uint8_t bytes_per_s
              bit_resolution,
              bytes_per_sample,
              AUDIO_CHANNELS * bytes_per_sample);
+    status_uart_send_state();
+}
+
+static void vbus_monitor_task(void *arg)
+{
+    (void)arg;
+    bool last = s_vbus_present;
+
+    while (true) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+        bool present = gpio_get_level(PIN_VBUS_SENSE) != 0;
+        if (present == last) {
+            continue;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(20));
+        present = gpio_get_level(PIN_VBUS_SENSE) != 0;
+        if (present == last) {
+            continue;
+        }
+
+        last = present;
+        s_vbus_present = present;
+        ESP_LOGI(TAG,
+                 "USB VBUS %s on GPIO%d",
+                 present ? "detected" : "removed",
+                 PIN_VBUS_SENSE);
+        if (!present) {
+            audio_stop("VBUS removed");
+        }
+        status_uart_send_state();
+    }
 }
 
 void app_main(void)
 {
+    board_status_io_init();
+    status_uart_send("BOOT:ESP32S3_USB_I2S");
+    status_uart_send_state();
+
     ESP_LOGI(TAG,
              "Starting USB Audio speaker: 44.1/48/88.2/96 kHz, 16/24-bit stereo, Philips I2S, "
-             "external MCLK input on D%d, oscillator select on D%d",
+             "external MCLK input on GPIO%d, oscillator select on GPIO%d",
              AUDIO_PIN_MCLK_IN,
              AUDIO_PIN_OSC_SELECT);
     ESP_LOGI(TAG,
@@ -756,6 +1061,7 @@ void app_main(void)
     esp_err_t i2s_err = audio_i2s_init(s_current_sample_rate);
     if (i2s_err == ESP_OK) {
         s_i2s_available = true;
+        s_settle_until_us = esp_timer_get_time() + (AUDIO_SETTLING_DELAY_MS * 1000LL);
     } else {
         ESP_LOGE(TAG,
                  "I2S disabled; USB can still enumerate for descriptor testing");
@@ -807,6 +1113,19 @@ void app_main(void)
         abort();
     }
 
+    task_ok = xTaskCreatePinnedToCore(
+        vbus_monitor_task,
+        "vbus_monitor",
+        3072,
+        NULL,
+        4,
+        NULL,
+        tskNO_AFFINITY);
+    if (task_ok != pdPASS) {
+        ESP_LOGE(TAG, "failed to create VBUS monitor task");
+        abort();
+    }
+
     uac_device_config_t uac_config = {
         .skip_tinyusb_init = false,
         .output_cb = uac_device_output_cb,
@@ -815,6 +1134,8 @@ void app_main(void)
         .set_volume_cb = uac_device_set_volume_cb,
         .set_sample_rate_cb = uac_device_set_sample_rate_cb,
         .set_format_cb = uac_device_set_format_cb,
+        .usb_state_cb = uac_device_usb_state_cb,
+        .stream_state_cb = uac_device_stream_state_cb,
         .cb_ctx = NULL,
     };
 

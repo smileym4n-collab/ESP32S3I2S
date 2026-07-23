@@ -142,12 +142,22 @@ void tud_mount_cb(void)
     s_uac_device->spk_active = false;
     s_uac_device->mic_active = false;
     ESP_LOGI(TAG, "USB mounted");
+    if (s_uac_device->user_cfg.usb_state_cb) {
+        s_uac_device->user_cfg.usb_state_cb(true, s_uac_device->user_cfg.cb_ctx);
+    }
 }
 
 // Invoked when device is unmounted
 void tud_umount_cb(void)
 {
+    s_uac_device->spk_active = false;
     ESP_LOGI(TAG, "USB unmounted");
+    if (s_uac_device->user_cfg.stream_state_cb) {
+        s_uac_device->user_cfg.stream_state_cb(false, s_uac_device->user_cfg.cb_ctx);
+    }
+    if (s_uac_device->user_cfg.usb_state_cb) {
+        s_uac_device->user_cfg.usb_state_cb(false, s_uac_device->user_cfg.cb_ctx);
+    }
 }
 
 // Invoked when usb bus is suspended
@@ -159,12 +169,21 @@ void tud_suspend_cb(bool remote_wakeup_en)
     s_uac_device->spk_active = false;
     s_uac_device->mic_active = false;
     ESP_LOGI(TAG, "USB suspended");
+    if (s_uac_device->user_cfg.stream_state_cb) {
+        s_uac_device->user_cfg.stream_state_cb(false, s_uac_device->user_cfg.cb_ctx);
+    }
+    if (s_uac_device->user_cfg.usb_state_cb) {
+        s_uac_device->user_cfg.usb_state_cb(false, s_uac_device->user_cfg.cb_ctx);
+    }
 }
 
 // Invoked when usb bus is resumed
 void tud_resume_cb(void)
 {
     ESP_LOGI(TAG, "USB resumed");
+    if (s_uac_device->user_cfg.usb_state_cb) {
+        s_uac_device->user_cfg.usb_state_cb(true, s_uac_device->user_cfg.cb_ctx);
+    }
 }
 #endif
 
@@ -219,6 +238,10 @@ static bool tud_audio_clock_set_request(uint8_t rhport, audio_control_request_t 
         TU_LOG1("Clock set current freq: %ld\r\n", target_sample_rate);
 
         if (!sample_rate_supported(target_sample_rate)) {
+            ESP_LOGE(TAG, "Host requested unsupported sample rate: %" PRIu32 " Hz", target_sample_rate);
+            if (s_uac_device->user_cfg.set_sample_rate_cb) {
+                s_uac_device->user_cfg.set_sample_rate_cb(target_sample_rate, s_uac_device->user_cfg.cb_ctx);
+            }
             return false;
         }
 
@@ -369,6 +392,9 @@ bool tud_audio_set_itf_close_EP_cb(uint8_t rhport, tusb_control_request_t const 
         TU_LOG2("Speaker interface closed");
         s_uac_device->spk_data_size = 0;
         s_uac_device->spk_active = false;
+        if (s_uac_device->user_cfg.stream_state_cb) {
+            s_uac_device->user_cfg.stream_state_cb(false, s_uac_device->user_cfg.cb_ctx);
+        }
     }
 #endif
 
@@ -407,6 +433,9 @@ bool tud_audio_set_itf_cb(uint8_t rhport, tusb_control_request_t const *p_reques
                 s_uac_device->spk_resolution,
                 s_uac_device->spk_bytes_per_sample,
                 s_uac_device->user_cfg.cb_ctx);
+        }
+        if (s_uac_device->user_cfg.stream_state_cb) {
+            s_uac_device->user_cfg.stream_state_cb(true, s_uac_device->user_cfg.cb_ctx);
         }
         xTaskNotifyGive(s_uac_device->spk_task_handle);
         TU_LOG1("Speaker interface %d-%d opened", itf, alt);
@@ -585,6 +614,8 @@ esp_err_t uac_device_init(uac_device_config_t *config)
     s_uac_device->user_cfg.set_volume_cb = config->set_volume_cb;
     s_uac_device->user_cfg.set_sample_rate_cb = config->set_sample_rate_cb;
     s_uac_device->user_cfg.set_format_cb = config->set_format_cb;
+    s_uac_device->user_cfg.usb_state_cb = config->usb_state_cb;
+    s_uac_device->user_cfg.stream_state_cb = config->stream_state_cb;
     s_uac_device->current_sample_rate = DEFAULT_SAMPLE_RATE;
     s_uac_device->spk_resolution = CFG_TUD_AUDIO_FUNC_1_FORMAT_1_RESOLUTION_RX;
     s_uac_device->spk_bytes_per_sample = CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_RX;
