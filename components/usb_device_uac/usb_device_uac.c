@@ -76,6 +76,10 @@ typedef struct {
     TaskHandle_t spk_task_handle;
     uint32_t spk_frame_remainder;
     uint32_t mic_frame_remainder;
+    volatile uint32_t spk_rx_callbacks;
+    volatile uint32_t spk_rx_bytes;
+    volatile uint32_t spk_read_bytes;
+    volatile uint16_t spk_fifo_available;
     bool spk_active;
     bool mic_active;
 } uac_device_t;
@@ -465,6 +469,9 @@ bool tud_audio_rx_done_isr(uint8_t rhport, uint16_t n_bytes_received, uint8_t fu
     (void)ep_out;
     (void)cur_alt_setting;
 
+    s_uac_device->spk_rx_callbacks++;
+    s_uac_device->spk_rx_bytes += n_bytes_received;
+
     static bool new_play = false;
     static int64_t last_time = 0;
     int64_t now = esp_timer_get_time();
@@ -481,6 +488,7 @@ bool tud_audio_rx_done_isr(uint8_t rhport, uint16_t n_bytes_received, uint8_t fu
     last_time = now;
 
     int bytes_remained = tud_audio_n_available(func_id);
+    s_uac_device->spk_fifo_available = bytes_remained;
 
     size_t bytes_require;
 
@@ -505,6 +513,7 @@ bool tud_audio_rx_done_isr(uint8_t rhport, uint16_t n_bytes_received, uint8_t fu
     }
 
     s_uac_device->spk_data_size = tud_audio_n_read(func_id, s_uac_device->spk_buf, bytes_require);
+    s_uac_device->spk_read_bytes += s_uac_device->spk_data_size;
     xTaskNotifyGive(s_uac_device->spk_task_handle);
     return true;
 }
@@ -541,21 +550,45 @@ bool tud_audio_tx_done_isr(uint8_t rhport, uint16_t n_bytes_sent, uint8_t func_i
 #if SPEAK_CHANNEL_NUM
 static void usb_spk_task(void *pvParam)
 {
+    TickType_t last_stats = xTaskGetTickCount();
+    uint32_t last_callbacks = 0;
+    uint32_t last_rx_bytes = 0;
+    uint32_t last_read_bytes = 0;
+
     while (1) {
         if (s_uac_device->spk_active == false) {
             ulTaskNotifyTake(pdFAIL, portMAX_DELAY);
             continue;
         }
         // clear the notification
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
         if (s_uac_device->spk_data_size == 0) {
-            continue;
+            // Continue to the periodic diagnostics below.
+        } else {
+            // playback the data from the ring buffer chunk by chunk
+            if (s_uac_device->user_cfg.output_cb) {
+                s_uac_device->user_cfg.output_cb((uint8_t *)s_uac_device->spk_buf, s_uac_device->spk_data_size, s_uac_device->user_cfg.cb_ctx);
+            }
+            s_uac_device->spk_data_size = 0;
         }
-        // playback the data from the ring buffer chunk by chunk
-        if (s_uac_device->user_cfg.output_cb) {
-            s_uac_device->user_cfg.output_cb((uint8_t *)s_uac_device->spk_buf, s_uac_device->spk_data_size, s_uac_device->user_cfg.cb_ctx);
+
+        TickType_t now = xTaskGetTickCount();
+        if (now - last_stats >= pdMS_TO_TICKS(1000)) {
+            uint32_t callbacks = s_uac_device->spk_rx_callbacks;
+            uint32_t rx_bytes = s_uac_device->spk_rx_bytes;
+            uint32_t read_bytes = s_uac_device->spk_read_bytes;
+            ESP_LOGI(TAG,
+                     "UAC RX: callbacks=%" PRIu32 "/s bus=%" PRIu32
+                     " B/s read=%" PRIu32 " B/s fifo=%u bytes",
+                     callbacks - last_callbacks,
+                     rx_bytes - last_rx_bytes,
+                     read_bytes - last_read_bytes,
+                     s_uac_device->spk_fifo_available);
+            last_callbacks = callbacks;
+            last_rx_bytes = rx_bytes;
+            last_read_bytes = read_bytes;
+            last_stats = now;
         }
-        s_uac_device->spk_data_size = 0;
     }
 }
 #endif
