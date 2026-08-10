@@ -5,9 +5,9 @@
  *   Espressif's usb_device_uac component builds the TinyUSB UAC descriptors,
  *   including the speaker streaming interface, isochronous OUT endpoint, and
  *   feedback endpoint used to keep the host paced against device buffering.
- *   This project advertises 44.1, 48, 88.2, and 96 kHz. The host-selected
- *   sample rate is reported through a callback and the I2S peripheral is
- *   reconfigured.
+ *   This project advertises 44.1 and 48 kHz packed 24-bit stereo. The
+ *   host-selected sample rate is reported through a callback and the I2S
+ *   peripheral is reconfigured.
  *
  * I2S side:
  *   The custom board selects either a 22.5792 MHz or 24.5760 MHz oscillator
@@ -15,8 +15,8 @@
  *   GPIO15 as an external MCLK input, and to the external DAC MCLK header.
  *   The ESP32-S3 outputs BCLK, LRCK/WS, and DATA in standard Philips format.
  *   The wire format is always 32-bit stereo I2S slots so the DAC sees the
- *   conventional 64fs bit clock. 16-bit and 24-bit USB PCM are aligned into
- *   the most-significant bits of each 32-bit I2S sample word.
+ *   conventional 64fs bit clock. Packed 24-bit USB PCM is aligned into the
+ *   most-significant bits of each 32-bit I2S sample word.
  *
  * Buffering:
  *   USB callbacks enqueue received PCM into a FreeRTOS stream buffer. A
@@ -962,7 +962,7 @@ static void uac_device_set_format_cb(uint8_t bit_resolution, uint8_t bytes_per_s
     (void)cb_ctx;
 
     if (!((bit_resolution == 16 && bytes_per_sample == 2) ||
-          (bit_resolution == 24 && bytes_per_sample == 4))) {
+          (bit_resolution == 24 && (bytes_per_sample == 3 || bytes_per_sample == 4)))) {
         ESP_LOGW(TAG,
                  "Ignoring unsupported USB audio format: %u-bit, %u bytes/sample",
                  bit_resolution,
@@ -1034,12 +1034,12 @@ void app_main(void)
     status_uart_send_state();
 
     ESP_LOGI(TAG,
-             "Starting USB Audio speaker: 44.1/48/88.2/96 kHz, 16/24-bit stereo, Philips I2S, "
+             "Starting USB Audio speaker: 44.1/48 kHz, packed 24-bit stereo USB, Philips I2S, "
              "external MCLK input on GPIO%d, oscillator select on GPIO%d",
              AUDIO_PIN_MCLK_IN,
              AUDIO_PIN_OSC_SELECT);
     ESP_LOGI(TAG,
-             "Audio frame sizes: USB=4 or 8 bytes/frame, I2S=%d bytes/frame; at 48 kHz expect usb=192000 or 384000 B/s i2s=%d B/s",
+             "Audio frame sizes: USB=6 bytes/frame, I2S=%d bytes/frame; at 48 kHz expect usb=288000 B/s i2s=%d B/s",
              AUDIO_I2S_BYTES_PER_FRAME,
              48000 * AUDIO_I2S_BYTES_PER_FRAME);
 #if CONFIG_AUDIO_TEST_TONE

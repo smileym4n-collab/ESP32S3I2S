@@ -56,13 +56,14 @@ The firmware presents to the host as `Tom Watson Audio` and supports:
 
 - USB Audio Class speaker device through Espressif's TinyUSB-based
   `usb_device_uac` component
-- 44.1 kHz, 48 kHz, 88.2 kHz, and 96 kHz stereo, switchable by the OS
-- 16-bit and 24-bit PCM, selectable by the OS from the same firmware
+- 44.1 kHz and 48 kHz stereo, switchable by the OS
+- Packed 24-bit PCM in a 3-byte USB subslot
 - Philips I2S
 - 32-bit I2S slots, giving a conventional 64fs BCLK for external audio DACs
 - External MCLK input on GPIO15 using ESP-IDF `I2S_CLK_SRC_EXTERNAL`
 
-Oscillator selection:
+Oscillator selection hardware supports these clock families, although the
+active packed-24-bit USB profile advertises only 44.1 and 48 kHz:
 
 - 44.1 kHz: GPIO7 LOW, 22.5792 MHz, 512fs
 - 48 kHz: GPIO7 HIGH, 24.5760 MHz, 512fs
@@ -74,8 +75,7 @@ Oscillator selection:
 When macOS changes the selected sample rate, the firmware stops I2S,
 clears the audio buffer, selects the correct oscillator on GPIO7, recreates
 the I2S channel at the new rate, and waits for prefill before restarting
-playback. When the OS changes between 16-bit and 24-bit formats, the
-firmware clears the audio buffer and restarts I2S after the normal prefill.
+playback.
 
 In the N8 production profile, GPIO35 remains HIGH during disconnect, stream stop, unsupported state, and
 clock/I2S reconfiguration. After a rate change, firmware waits 500 ms for
@@ -176,13 +176,13 @@ idf.py -p <PORT> monitor
 ```
 
 Serial logs report USB mount/unmount from the UAC component, selected
-sample rate, selected 16/24-bit audio format, oscillator family, GPIO7 level,
+sample rate, packed 24-bit audio format, oscillator family, GPIO7 level,
 I2S pins, whether external MCLK input is in use, I2S start/stop, mute/volume
 requests, and software buffer underrun/overrun counts from the app.
 
 ## 24-bit Note
 
-The USB speaker interface advertises two streaming formats: 16-bit stereo
-PCM and 24-bit stereo PCM in 32-bit slots. The I2S side remains 32-bit
-stereo Philips I2S for both modes, so BCLK stays at the conventional 64fs
-rate while the audio payload changes with the OS-selected format.
+The USB speaker interface advertises one streaming format: packed 24-bit
+stereo PCM in 3-byte USB subslots at 44.1 or 48 kHz. The firmware expands
+each sample into the most-significant 24 bits of a 32-bit Philips-I2S slot,
+so BCLK remains the conventional 64fs expected by the PCM1794.

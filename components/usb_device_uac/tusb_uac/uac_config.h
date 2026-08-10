@@ -15,7 +15,7 @@ extern "C" {
 #define MIC_CHANNEL_NUM      CONFIG_UAC_MIC_CHANNEL_NUM      /*!< MIC */
 #define DEFAULT_SAMPLE_RATE  CONFIG_UAC_SAMPLE_RATE          /*!< Default sample rate */
 #define MIN_SAMPLE_RATE      44100                           /*!< Board clock supports 44.1 kHz */
-#define MAX_SAMPLE_RATE      96000                           /*!< Board clock supports 96 kHz */
+#define MAX_SAMPLE_RATE      48000                           /*!< Active USB profile maximum */
 #define SPK_INTERVAL_MS      CONFIG_UAC_SPK_INTERVAL_MS      /*!< READ INTERVAL in ms*/
 #define MIC_INTERVAL_MS      CONFIG_UAC_MIC_INTERVAL_MS      /*!< WRITE INTERVAL in ms*/
 

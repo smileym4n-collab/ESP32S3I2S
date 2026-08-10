@@ -163,13 +163,6 @@ enum {
     + TUD_AUDIO_DESC_TYPE_I_FORMAT_LEN\
     + TUD_AUDIO_DESC_STD_AS_ISO_EP_LEN\
     + TUD_AUDIO_DESC_CS_AS_ISO_EP_LEN\
-    + TUD_AUDIO_DESC_STD_AS_ISO_FB_EP_LEN\
-    /* Interface 1, Alternate 2 */\
-    + TUD_AUDIO_DESC_STD_AS_INT_LEN\
-    + TUD_AUDIO_DESC_CS_AS_INT_LEN\
-    + TUD_AUDIO_DESC_TYPE_I_FORMAT_LEN\
-    + TUD_AUDIO_DESC_STD_AS_ISO_EP_LEN\
-    + TUD_AUDIO_DESC_CS_AS_ISO_EP_LEN\
     + TUD_AUDIO_DESC_STD_AS_ISO_FB_EP_LEN)
 
 #define TUD_AUDIO_DESCRIPTOR(_itfnum, _stridx, _epout, _epin, _epfb)  TUD_AUDIO_SPEAK_DESCRIPTOR(_itfnum, _stridx, _epout, _epfb)
@@ -299,19 +292,6 @@ enum {
     TUD_AUDIO_DESC_TYPE_I_FORMAT(CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_RX, CFG_TUD_AUDIO_FUNC_1_FORMAT_1_RESOLUTION_RX),\
     /* Standard AS Isochronous Audio Data Endpoint Descriptor(4.10.1.1) */\
     TUD_AUDIO_DESC_STD_AS_ISO_EP(/*_ep*/ _epout, /*_attr*/ (TUSB_XFER_ISOCHRONOUS | TUSB_ISO_EP_ATT_ASYNCHRONOUS | TUSB_ISO_EP_ATT_DATA), /*_maxEPsize*/ CFG_TUD_AUDIO_FUNC_1_FORMAT_1_EP_SZ_OUT, /*_interval*/ 1),\
-    /* Class-Specific AS Isochronous Audio Data Endpoint Descriptor(4.10.1.2) */\
-    TUD_AUDIO_DESC_CS_AS_ISO_EP(/*_attr*/ AUDIO_CS_AS_ISO_DATA_EP_ATT_NON_MAX_PACKETS_OK, /*_ctrl*/ AUDIO_CTRL_NONE, /*_lockdelayunit*/ AUDIO_CS_AS_ISO_DATA_EP_LOCK_DELAY_UNIT_MILLISEC, /*_lockdelay*/ 0x0001),\
-    /* Standard AS Isochronous Audio Data Endpoint Descriptor(4.10.1.1) */\
-    TUD_AUDIO_DESC_STD_AS_ISO_FB_EP(/*_ep*/ _epfb, /*_epsize*/ UAC_FB_EP_SIZE, /*_interval*/1),\
-    /* Standard AS Interface Descriptor(4.9.1) */\
-    /* Interface 1, Alternate 2 - 24-bit speaker streaming in 32-bit slots */\
-    TUD_AUDIO_DESC_STD_AS_INT(/*_itfnum*/ _itfnum + 1, /*_altset*/ 0x02, /*_nEPs*/ 0x02, /*_stridx*/ _stridx + 1),\
-    /* Class-Specific AS Interface Descriptor(4.9.2) */\
-    TUD_AUDIO_DESC_CS_AS_INT(/*_termid*/ UAC2_ENTITY_SPK_INPUT_TERMINAL, /*_ctrl*/ AUDIO_CTRL_NONE, /*_formattype*/ AUDIO_FORMAT_TYPE_I, /*_formats*/ AUDIO_DATA_FORMAT_TYPE_I_PCM, /*_nchannelsphysical*/ SPEAK_CHANNEL_NUM, /*_channelcfg*/ UAC_SPK_CHANNEL_CONFIG, /*_stridx*/ 0x00),\
-    /* Type I Format Type Descriptor(2.3.1.6 - Audio Formats) */\
-    TUD_AUDIO_DESC_TYPE_I_FORMAT(CFG_TUD_AUDIO_FUNC_1_FORMAT_2_N_BYTES_PER_SAMPLE_RX, CFG_TUD_AUDIO_FUNC_1_FORMAT_2_RESOLUTION_RX),\
-    /* Standard AS Isochronous Audio Data Endpoint Descriptor(4.10.1.1) */\
-    TUD_AUDIO_DESC_STD_AS_ISO_EP(/*_ep*/ _epout, /*_attr*/ (TUSB_XFER_ISOCHRONOUS | TUSB_ISO_EP_ATT_ASYNCHRONOUS | TUSB_ISO_EP_ATT_DATA), /*_maxEPsize*/ CFG_TUD_AUDIO_FUNC_1_FORMAT_2_EP_SZ_OUT, /*_interval*/ 1),\
     /* Class-Specific AS Isochronous Audio Data Endpoint Descriptor(4.10.1.2) */\
     TUD_AUDIO_DESC_CS_AS_ISO_EP(/*_attr*/ AUDIO_CS_AS_ISO_DATA_EP_ATT_NON_MAX_PACKETS_OK, /*_ctrl*/ AUDIO_CTRL_NONE, /*_lockdelayunit*/ AUDIO_CS_AS_ISO_DATA_EP_LOCK_DELAY_UNIT_MILLISEC, /*_lockdelay*/ 0x0001),\
     /* Standard AS Isochronous Audio Data Endpoint Descriptor(4.10.1.1) */\

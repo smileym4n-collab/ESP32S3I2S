@@ -22,8 +22,6 @@ static const char *TAG = "usbd_uac";
 const uint32_t sample_rates[] = {
     44100,
     48000,
-    88200,
-    96000,
 };
 
 #define N_SAMPLE_RATES  TU_ARRAY_SIZE(sample_rates)
@@ -43,14 +41,12 @@ enum {
     VOLUME_CTRL_SILENCE = 0x8000,
 };
 
-// Speaker format arrays map active streaming alternate settings: alt 1 -> index 0, alt 2 -> index 1.
+// The single active streaming alternate setting maps to index 0.
 const uint8_t spk_resolutions_per_format[CFG_TUD_AUDIO_FUNC_1_N_FORMATS] = {
     CFG_TUD_AUDIO_FUNC_1_FORMAT_1_RESOLUTION_RX,
-    CFG_TUD_AUDIO_FUNC_1_FORMAT_2_RESOLUTION_RX,
 };
 const uint8_t spk_bytes_per_sample_per_format[CFG_TUD_AUDIO_FUNC_1_N_FORMATS] = {
     CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_RX,
-    CFG_TUD_AUDIO_FUNC_1_FORMAT_2_N_BYTES_PER_SAMPLE_RX,
 };
 const uint8_t mic_resolutions_per_format[CFG_TUD_AUDIO_FUNC_1_N_FORMATS] = {CFG_TUD_AUDIO_FUNC_1_FORMAT_1_RESOLUTION_TX};
 
@@ -657,10 +653,9 @@ esp_err_t uac_device_init(uac_device_config_t *config)
     s_uac_device->mic_buf_read = s_uac_device->mic_buf2;
 
     ESP_LOGI(TAG,
-             "UAC speaker config: channels=%d formats=16-bit/2-byte and 24-bit/4-byte frame_bytes=%d/%d ep_out_size_max=%d fb_ep_size=%d interval_ms=%d",
+             "UAC speaker config: channels=%d format=24-bit/3-byte frame_bytes=%d ep_out_size_max=%d fb_ep_size=%d interval_ms=%d",
              CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_RX,
              CFG_TUD_AUDIO_FUNC_1_FORMAT_1_FRAME_SZ_RX,
-             CFG_TUD_AUDIO_FUNC_1_FORMAT_2_FRAME_SZ_RX,
              CFG_TUD_AUDIO_FUNC_1_EP_OUT_SZ_MAX,
              UAC_FB_EP_SIZE,
              SPK_INTERVAL_MS);
